@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -13,25 +14,38 @@ type Approval struct {
 	Status     domain.Status
 }
 
-type Repository struct {
+type Repository interface {
+	CreateOrGet(context.Context, string) (Approval, error)
+	Get(context.Context, string) (Approval, error)
+	List(context.Context) ([]Approval, error)
+	Decide(context.Context, string, domain.Status) (Approval, error)
+}
+
+type MemoryRepository struct {
 	mu    sync.RWMutex
 	items map[string]Approval
 }
 
-func NewRepository() *Repository { return &Repository{items: make(map[string]Approval)} }
+func NewRepository() *MemoryRepository { return &MemoryRepository{items: make(map[string]Approval)} }
 
-func (r *Repository) CreateOrGet(id string) Approval {
+func (r *MemoryRepository) CreateOrGet(ctx context.Context, id string) (Approval, error) {
+	if err := ctx.Err(); err != nil {
+		return Approval{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if a, ok := r.items[id]; ok {
-		return a
+		return a, nil
 	}
 	a := Approval{PurchaseID: id, Status: domain.Pending}
 	r.items[id] = a
-	return a
+	return a, nil
 }
 
-func (r *Repository) Get(id string) (Approval, error) {
+func (r *MemoryRepository) Get(ctx context.Context, id string) (Approval, error) {
+	if err := ctx.Err(); err != nil {
+		return Approval{}, err
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	a, ok := r.items[id]
@@ -41,7 +55,10 @@ func (r *Repository) Get(id string) (Approval, error) {
 	return a, nil
 }
 
-func (r *Repository) List() []Approval {
+func (r *MemoryRepository) List(ctx context.Context) ([]Approval, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	items := make([]Approval, 0, len(r.items))
@@ -49,10 +66,16 @@ func (r *Repository) List() []Approval {
 		items = append(items, a)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].PurchaseID < items[j].PurchaseID })
-	return items
+	return items, nil
 }
 
-func (r *Repository) Decide(id string, decision domain.Status) (Approval, error) {
+func (r *MemoryRepository) Decide(ctx context.Context, id string, decision domain.Status) (Approval, error) {
+	if err := ctx.Err(); err != nil {
+		return Approval{}, err
+	}
+	if err := domain.ValidateDecision(decision); err != nil {
+		return Approval{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	a, ok := r.items[id]

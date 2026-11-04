@@ -2,8 +2,6 @@ package purchase
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -18,12 +16,12 @@ type ApprovalCreator interface {
 }
 
 type Service struct {
-	repo      *Repository
+	repo      Repository
 	approvals ApprovalCreator
 	timeout   time.Duration
 }
 
-func NewService(repo *Repository, approvals ApprovalCreator, timeout time.Duration) *Service {
+func NewService(repo Repository, approvals ApprovalCreator, timeout time.Duration) *Service {
 	return &Service{repo: repo, approvals: approvals, timeout: timeout}
 }
 
@@ -58,11 +56,7 @@ func (s *Service) Create(ctx context.Context, in Input) (Purchase, error) {
 	if err != nil {
 		return Purchase{}, err
 	}
-	var id [16]byte
-	if _, err := rand.Read(id[:]); err != nil {
-		return Purchase{}, fmt.Errorf("generate purchase ID: %w", err)
-	}
-	p, err := s.repo.CreateOrGet(Purchase{Input: in, ID: hex.EncodeToString(id[:]), TotalCents: total, Status: domain.Pending})
+	p, err := s.repo.CreateOrGet(ctx, Purchase{Input: in, ID: domain.NewUUID(), TotalCents: total, Status: domain.Pending})
 	if err != nil {
 		return Purchase{}, err
 	}
@@ -72,7 +66,7 @@ func (s *Service) Create(ctx context.Context, in Input) (Purchase, error) {
 	if err := s.approvals.CreateApproval(callCtx, p.ID); err != nil {
 		return Purchase{}, fmt.Errorf("purchase saved; retry CreatePurchase with the same client_request_id and details to ensure approval: %w", err)
 	}
-	return s.repo.Get(p.ID)
+	return s.repo.Get(ctx, p.ID)
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Purchase, error) {
@@ -82,14 +76,14 @@ func (s *Service) Get(ctx context.Context, id string) (Purchase, error) {
 	if err := domain.ValidateID("purchase_id", id); err != nil {
 		return Purchase{}, err
 	}
-	return s.repo.Get(id)
+	return s.repo.Get(ctx, id)
 }
 
 func (s *Service) List(ctx context.Context) ([]Purchase, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return s.repo.List(), nil
+	return s.repo.List(ctx)
 }
 
 func (s *Service) SetApprovalStatus(ctx context.Context, id string, decision domain.Status) (Purchase, error) {
@@ -102,5 +96,5 @@ func (s *Service) SetApprovalStatus(ctx context.Context, id string, decision dom
 	if err := domain.ValidateDecision(decision); err != nil {
 		return Purchase{}, err
 	}
-	return s.repo.SetStatus(id, decision)
+	return s.repo.SetStatus(ctx, id, decision)
 }

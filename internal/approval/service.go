@@ -13,12 +13,12 @@ type PurchaseUpdater interface {
 }
 
 type Service struct {
-	repo      *Repository
+	repo      Repository
 	purchases PurchaseUpdater
 	timeout   time.Duration
 }
 
-func NewService(repo *Repository, purchases PurchaseUpdater, timeout time.Duration) *Service {
+func NewService(repo Repository, purchases PurchaseUpdater, timeout time.Duration) *Service {
 	return &Service{repo: repo, purchases: purchases, timeout: timeout}
 }
 
@@ -29,7 +29,7 @@ func (s *Service) Create(ctx context.Context, id string) (Approval, error) {
 	if err := domain.ValidateID("purchase_id", id); err != nil {
 		return Approval{}, err
 	}
-	return s.repo.CreateOrGet(id), nil
+	return s.repo.CreateOrGet(ctx, id)
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Approval, error) {
@@ -39,14 +39,14 @@ func (s *Service) Get(ctx context.Context, id string) (Approval, error) {
 	if err := domain.ValidateID("purchase_id", id); err != nil {
 		return Approval{}, err
 	}
-	return s.repo.Get(id)
+	return s.repo.Get(ctx, id)
 }
 
 func (s *Service) List(ctx context.Context) ([]Approval, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return s.repo.List(), nil
+	return s.repo.List(ctx)
 }
 
 func (s *Service) Decide(ctx context.Context, id string, decision domain.Status) (Approval, error) {
@@ -59,7 +59,7 @@ func (s *Service) Decide(ctx context.Context, id string, decision domain.Status)
 	if err := domain.ValidateDecision(decision); err != nil {
 		return Approval{}, err
 	}
-	a, err := s.repo.Decide(id, decision)
+	a, err := s.repo.Decide(ctx, id, decision)
 	if err != nil {
 		return Approval{}, err
 	}

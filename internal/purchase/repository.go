@@ -1,6 +1,7 @@
 package purchase
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -23,19 +24,29 @@ type Purchase struct {
 	Status     domain.Status
 }
 
-// Repository returns values, never pointers into shared maps.
-type Repository struct {
+type Repository interface {
+	CreateOrGet(context.Context, Purchase) (Purchase, error)
+	Get(context.Context, string) (Purchase, error)
+	List(context.Context) ([]Purchase, error)
+	SetStatus(context.Context, string, domain.Status) (Purchase, error)
+}
+
+// MemoryRepository returns values, never pointers into shared maps.
+type MemoryRepository struct {
 	mu        sync.RWMutex
 	byID      map[string]Purchase
 	byRequest map[string]string
 }
 
-func NewRepository() *Repository {
-	return &Repository{byID: make(map[string]Purchase), byRequest: make(map[string]string)}
+func NewRepository() *MemoryRepository {
+	return &MemoryRepository{byID: make(map[string]Purchase), byRequest: make(map[string]string)}
 }
 
 // CreateOrGet checks the idempotency key and inserts under the same lock.
-func (r *Repository) CreateOrGet(p Purchase) (Purchase, error) {
+func (r *MemoryRepository) CreateOrGet(ctx context.Context, p Purchase) (Purchase, error) {
+	if err := ctx.Err(); err != nil {
+		return Purchase{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if id, ok := r.byRequest[p.ClientRequestID]; ok {
@@ -50,7 +61,10 @@ func (r *Repository) CreateOrGet(p Purchase) (Purchase, error) {
 	return p, nil
 }
 
-func (r *Repository) Get(id string) (Purchase, error) {
+func (r *MemoryRepository) Get(ctx context.Context, id string) (Purchase, error) {
+	if err := ctx.Err(); err != nil {
+		return Purchase{}, err
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	p, ok := r.byID[id]
@@ -60,7 +74,10 @@ func (r *Repository) Get(id string) (Purchase, error) {
 	return p, nil
 }
 
-func (r *Repository) List() []Purchase {
+func (r *MemoryRepository) List(ctx context.Context) ([]Purchase, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	items := make([]Purchase, 0, len(r.byID))
@@ -68,10 +85,16 @@ func (r *Repository) List() []Purchase {
 		items = append(items, p)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
-	return items
+	return items, nil
 }
 
-func (r *Repository) SetStatus(id string, decision domain.Status) (Purchase, error) {
+func (r *MemoryRepository) SetStatus(ctx context.Context, id string, decision domain.Status) (Purchase, error) {
+	if err := ctx.Err(); err != nil {
+		return Purchase{}, err
+	}
+	if err := domain.ValidateDecision(decision); err != nil {
+		return Purchase{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.byID[id]

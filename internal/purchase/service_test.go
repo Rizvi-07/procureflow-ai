@@ -76,7 +76,10 @@ func TestConcurrentCreateIdempotency(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	items := repo.List()
+	items, err := repo.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(items) != 1 {
 		t.Fatalf("created %d purchases", len(items))
 	}
@@ -90,7 +93,7 @@ func TestConcurrentCreateIdempotency(t *testing.T) {
 		t.Fatalf("conflict=%v", err)
 	}
 	items[0].ItemName = "modified snapshot"
-	fresh, _ := repo.Get(p.ID)
+	fresh, _ := repo.Get(context.Background(), p.ID)
 	if fresh.ItemName != validInput().ItemName {
 		t.Fatal("list exposed shared mutable state")
 	}
@@ -114,7 +117,10 @@ func TestCreateDeadlineAndRetry(t *testing.T) {
 	if _, err := svc.Create(ctx, validInput()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error=%v", err)
 	}
-	stored := repo.List()
+	stored, err := repo.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(stored) != 1 {
 		t.Fatal("purchase must survive RPC failure")
 	}

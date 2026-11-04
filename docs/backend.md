@@ -1,8 +1,8 @@
-# Running the Phase 02 backend
+# Running the backend
 
 ## Prerequisites
 
-Use Go 1.26 or newer. No database, frontend, Docker, API keys, or external services are needed. Run all commands from the repository root. Dependencies are pinned in `go.mod` and `go.sum`. Generated protobuf files are included.
+Use Go 1.26 or newer. Run all commands from the repository root. Dependencies are pinned in `go.mod` and `go.sum`. Generated protobuf files are included. The default demo uses memory; for PostgreSQL persistence, follow [postgresql.md](postgresql.md) to set `DATABASE_URL` in both server terminals and run migrations before starting them.
 
 ```powershell
 go mod download
@@ -38,7 +38,7 @@ created purchase=<id> total_cents=5000 status=STATUS_PENDING
 read purchase=<id> status=STATUS_APPROVED; create and decision retries succeeded
 ```
 
-The second command returns the same purchase ID, already APPROVED. Omitting `-request-id` generates a new key. Both processes use memory only; restarting them clears the demo data.
+The second command returns the same purchase ID, already APPROVED. Omitting `-request-id` generates a new key. In memory mode, restarting clears data. With `DATABASE_URL` set, restarting either service preserves records and idempotency keys.
 
 ## Configuration
 
@@ -50,6 +50,9 @@ Servers read shell environment variables; `.env` is a reference convention, not 
 - `APPROVAL_SERVICE_GRPC_TARGET=localhost:50052`: destination for purchase handoffs and the smoke client.
 - `GRPC_CALL_TIMEOUT=2s`: maximum duration of each service-to-service call.
 - `SHUTDOWN_TIMEOUT=5s`: drain limit before forced shutdown.
+- `DATABASE_URL` (empty): PostgreSQL URL; empty selects memory. Set it separately in each server terminal.
+- `DATABASE_TIMEOUT=5s`: bounds database operations and startup connection checks.
+- `TEST_DATABASE_URL` (empty): optional integration-test server URL with CREATEDB permission; never falls back to `DATABASE_URL`.
 
 For different ports, set all four address/target variables consistently in each terminal before starting a server or the smoke client:
 
@@ -70,13 +73,15 @@ Listen addresses may have an empty host; peer targets require a host. Ports must
 
 IDs (`employee_id`, `client_request_id`, and lookup IDs) must contain 1-128 ASCII letters, digits, underscores, or hyphens, starting with a letter or digit. UUID strings satisfy this rule but are not required. Item names must be valid UTF-8, contain non-whitespace text, and have at most 200 characters. Quantity must be positive, unit price nonnegative, and their product must fit a signed 64-bit integer. Inputs are compared exactly for idempotency; whitespace is not silently normalized.
 
+New purchase IDs are UUIDv4 strings; PostgreSQL stores them as UUID keys. In PostgreSQL mode, `CreateApproval` requires a purchase UUID. Get/decision operations using a syntactically valid non-UUID key return `NotFound`. Employee and client request IDs remain ordinary strings. RPC definitions and generated code are unchanged.
+
 Error behavior:
 
 - `InvalidArgument`: invalid input, unknown enum, PENDING decision, or calculation overflow.
 - `NotFound`: missing purchase or approval on get/update/decision.
 - `AlreadyExists`: create key reused with different valid purchase details.
 - `FailedPrecondition`: attempt to change a terminal decision or purchase status.
-- `Unavailable`: failed dependency call. The local write may already exist; retry using the same key/input or decision.
+- `Unavailable`: failed dependency call or temporary database failure. The local write may already exist; retry using the same key/input or decision.
 - `DeadlineExceeded`: caller or dependency deadline expired. A local or remote write may have completed; retry identically.
 - `Canceled`: caller canceled the operation; completion may be ambiguous after a write.
 - `Internal`: unexpected local failure, with a generic client-facing message.
@@ -92,6 +97,8 @@ go build ./...
 ```
 
 Tests cover input validation, overflow boundaries, concurrent idempotency, transition conflicts, short deadlines, shutdown, and real loopback gRPC exchanges between the two services. Failure tests simulate unavailable peers, lost responses, and deadline expiry, then assert successful synchronization on retry. They do not require fixed ports or an external server.
+
+Database integration tests are separate and explicitly skip when `TEST_DATABASE_URL` is unset/unavailable or the test role cannot create isolated databases. Use `go test -v -count=1 ./internal/postgres` to see executed versus skipped checks. See [postgresql.md](postgresql.md) for setup; a successful Go test exit with SKIP lines is not proof that persistence passed.
 
 Where CGO and a supported C compiler are installed:
 

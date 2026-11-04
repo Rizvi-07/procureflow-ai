@@ -6,7 +6,7 @@ The project is built in small, independently testable milestones, with maintaina
 
 ## Current status
 
-**Phase 02: Runnable two-service Go gRPC backend.** Purchase and approval services run as separate processes with in-memory repositories. Create/get/list, safe integer pricing, idempotent creation, approval decisions, retry-based synchronization, health checks, and graceful shutdown are implemented and tested. The frontend, gateway, database, Docker setup, authentication, and AI extension are not implemented.
+**Phase 03: PostgreSQL persistence.** Purchase and approval services run as separate Go gRPC processes. Setting `DATABASE_URL` enables PostgreSQL repositories; leaving it empty retains the in-memory demo. Service-owned schemas, rerunnable migrations, safe integer pricing, idempotency, transactional decisions, retry-based synchronization, health checks, and graceful shutdown are implemented. Frontend, gateway, Docker setup, authentication, and AI remain future work.
 
 See [the backend run guide](docs/backend.md) for two-terminal startup, configuration, a smoke client, tests, and Protocol Buffer generation.
 
@@ -29,7 +29,8 @@ See [the backend run guide](docs/backend.md) for two-terminal startup, configura
 - Implemented: create, get, list, approve, or reject approvals; synchronize the purchase through gRPC.
 - Implemented: retry-safe operations, dependency deadlines, structured logs, and health checks.
 - Planned: procurement dashboard, purchasing forms, and a REST/JSON gateway.
-- Planned: persistent storage and a policy assistant using fictional documents.
+- Implemented: PostgreSQL persistence through pgxpool, isolated purchase/approval schemas, and versioned migrations.
+- Planned: a policy assistant using fictional documents.
 
 ## Repository layout
 
@@ -40,9 +41,11 @@ cmd/
   purchase-service/          Purchase server entry point
   approval-service/          Approval server entry point
   smoke/                     Create -> approve -> read demonstration
+  migrate/                   Apply PostgreSQL migrations
 internal/
-  purchase/                  Purchase business rules and in-memory repository
-  approval/                  Approval business rules and in-memory repository
+  purchase/                  Purchase rules and memory/PostgreSQL repositories
+  approval/                  Approval rules and memory/PostgreSQL repositories
+  postgres/                  Connection pool, error mapping, and database tests
   domain/                    Shared status values, validation, and errors
   rpc/                       gRPC handlers, client adapters, and integration tests
   config/                    Environment configuration
@@ -51,8 +54,8 @@ internal/
 proto/procureflow/v1/        Versioned Protocol Buffer contract
 gen/procureflow/v1/          Generated Go messages and gRPC stubs
 services/                    Reserved directories from Phase 00
-database/
-  migrations/               Reserved for future PostgreSQL schema changes
+migrations/                  Embedded, versioned SQL migrations (active)
+database/migrations/         Unused Phase 00 placeholder
 docs/
   architecture.md           Current system design and service boundaries
   backend.md                Runnable backend guide
@@ -62,7 +65,7 @@ Empty application directories contain `.gitkeep` placeholders so Git can track t
 
 ## Development preparation
 
-The current backend requires **Go 1.26 or newer**. Generated Protocol Buffer code is included, so `protoc` is needed only when changing the contract. Node.js, Docker, and PostgreSQL are not needed for this milestone.
+The backend requires **Go 1.26 or newer** and PostgreSQL 14+ for persistent mode (verified with PostgreSQL 18.3). The in-memory demo does not require PostgreSQL. Generated Protocol Buffer code is included, so `protoc` is needed only when changing the contract. See [PostgreSQL setup and testing](docs/postgresql.md).
 
 Use `.env.example` as the configuration reference. Servers read environment variables from the shell; they do **not** automatically load `.env`. The run guide shows PowerShell examples. Never commit `.env` files, credentials, or API keys.
 
@@ -73,14 +76,14 @@ Read [docs/architecture.md](docs/architecture.md) for the design. Local AI assis
 | Phase | Milestone | Expected verification |
 | --- | --- | --- |
 | 00 | Repository foundation and architecture documentation | Check directories, documentation, ignore rules, and Git diff |
-| 01 | Original persistence-first plan deferred; no database implemented | Revisit persistence in a separately authorized milestone |
+| 01 | Original persistence-first plan superseded by the requested milestones | Persistence delivered in Phase 03 |
 | 02 | Completed: runnable purchase and approval gRPC services with in-memory storage | Go unit tests, loopback gRPC integration tests, and executable smoke client |
-| 03 | Go API gateway with REST/JSON endpoints | HTTP validation and gRPC error-mapping tests |
+| 03 | Completed: PostgreSQL persistence and service-owned schemas | Database constraint, migration, concurrency, and restart checks |
 | 04 | Vue dashboard and purchasing forms | TypeScript checks, production build, and manual flow verification |
 | 05 | Policy RAG assistant with pgvector and fictional documents | Retrieval tests and grounded-answer checks |
 | 06 | Complete Docker Compose workflow and interview preparation | End-to-end smoke checks and documented demo walkthrough |
 
-The requested Phase 02 scope takes precedence over the original persistence-first roadmap. Database infrastructure remains future work. Each milestone should remain small enough to review and verify independently.
+The requested Phase 03 persistence scope supersedes the original gateway milestone. The REST/JSON gateway remains future work. Each milestone should remain small enough to review and verify independently.
 
 ## Data and Git workflow
 

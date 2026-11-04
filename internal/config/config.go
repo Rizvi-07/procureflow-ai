@@ -10,6 +10,8 @@ import (
 )
 
 type Config struct {
+	DatabaseURL     string
+	DatabaseTimeout time.Duration
 	PurchaseAddr    string
 	ApprovalAddr    string
 	PurchaseTarget  string
@@ -22,6 +24,7 @@ type Config struct {
 // while localhost:50051 identifies the destination of an outgoing call.
 func Load() (Config, error) {
 	c := Config{
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		PurchaseAddr:   env("PURCHASE_SERVICE_GRPC_ADDR", ":50051"),
 		ApprovalAddr:   env("APPROVAL_SERVICE_GRPC_ADDR", ":50052"),
 		PurchaseTarget: env("PURCHASE_SERVICE_GRPC_TARGET", "localhost:50051"),
@@ -46,6 +49,9 @@ func Load() (Config, error) {
 		}
 	}
 	var err error
+	if c.DatabaseTimeout, err = duration("DATABASE_TIMEOUT", "5s"); err != nil {
+		return Config{}, err
+	}
 	if c.RPCTimeout, err = duration("GRPC_CALL_TIMEOUT", "2s"); err != nil {
 		return Config{}, err
 	}
