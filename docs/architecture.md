@@ -1,76 +1,64 @@
 # ProcureFlow AI architecture
 
-## Status and purpose
+## Current implementation: Phase 02
 
-This document describes the planned architecture. Phase 00 creates repository foundations only; none of the services or data flows below are implemented yet.
-
-ProcureFlow AI separates purchase request management from approval workflows. A Go API gateway gives the Vue frontend a single REST/JSON entry point while Go services communicate through typed gRPC contracts.
-
-## System diagram
+The runnable backend has two Go processes communicating over gRPC, with one in-memory repository per process. Both executables belong to a single root Go module, keeping builds and shared contract generation simple. Domain logic lives in `internal/purchase` and `internal/approval`; `cmd/` contains small entry points.
 
 ```mermaid
-flowchart TD
-    User[User] --> Frontend[Vue 3 frontend]
-    Frontend -->|REST / JSON| Gateway[Go API gateway]
-    Gateway -->|gRPC| Purchase[Go purchase service]
-    Gateway -->|gRPC| Approval[Go approval service]
-    Approval -->|gRPC: validate request and apply outcome| Purchase
-    Purchase -->|SQL: owned purchase tables| Database[(PostgreSQL)]
-    Approval -->|SQL: owned approval tables| Database
-    Gateway -.->|Planned AI endpoint| Assistant[Policy RAG assistant]
-    Policies[Fictional policy documents] -.->|Ingest and embed| Assistant
-    Assistant -.->|Retrieve policy chunks with pgvector| Database
-    Assistant -.->|Embeddings and answer generation| Model[Configurable AI model provider]
+flowchart LR
+    Client[Go smoke client] -->|Create / Get / List| Purchase[Purchase gRPC service :50051]
+    Client -->|Decide / Get / List| Approval[Approval gRPC service :50052]
+    Purchase -->|CreateApproval with deadline| Approval
+    Approval -->|SetApprovalStatus with deadline| Purchase
+    Purchase --> PurchaseStore[(Purchase in-memory repository)]
+    Approval --> ApprovalStore[(Approval in-memory repository)]
 ```
 
-The AI component's deployment boundary and provider will be selected during the AI milestone. Dashed connections represent that extension.
+The future Vue application will call a Go REST/JSON gateway, which will call these services. PostgreSQL, Docker, authentication, and policy RAG are future milestones and have no runtime implementation here. The original `services/` directories remain reserved; current backend code is under `cmd/` and `internal/` as requested.
 
-## Component responsibilities
+## Boundaries and Go packages
 
-### Frontend
+- `internal/purchase` owns purchases, price calculations, create keys, and purchase status transitions.
+- `internal/approval` owns approval records and decisions, keyed by purchase ID.
+- `internal/domain` defines shared status values, validation helpers, and sentinel errors. It has no gRPC dependency.
+- `internal/rpc` translates generated messages into domain inputs and maps domain errors into gRPC status codes. Client adapters implement the small interfaces consumed by the services.
+- `internal/config` reads environment variables and rejects invalid addresses or durations.
+- `internal/server` supplies structured request logs, health registration, and bounded graceful shutdown.
+- `internal/app` wires repositories, services, clients, and handlers together and handles process signals.
+- `proto/procureflow/v1/procurement.proto` is the versioned contract; `gen/procureflow/v1` contains generated Go code, never hand-edited.
 
-`frontend/` will contain the Vue 3 application written in TypeScript and built with Vite. It will provide a dashboard, purchase request forms, approval views, and eventually policy chat. It calls the gateway over HTTP and displays loading, validation, and error states.
+A Go interface describes the behavior a caller needs. For example, purchase logic needs only `CreateApproval(ctx, purchaseID)`. Unit tests can supply a small fake; the running application supplies a gRPC client adapter. Business logic does not need generated protobuf types or a network connection to be tested.
 
-### API gateway
+## Purchase creation and partial failure
 
-`api-gateway/` will expose REST/JSON endpoints. It will decode and validate HTTP requests, call gRPC services with deadlines, and translate service results into consistent HTTP responses. Domain rules remain in the service that owns the behavior.
+1. Validate IDs, item name, positive quantity, and nonnegative unit price.
+2. Check `unit_price_cents <= MaxInt64 / quantity` before multiplying. Prices use integer cents, so no floating-point rounding is involved.
+3. Atomically insert a PENDING purchase or return the existing record for the same `client_request_id` and identical input. Changed input with the same key returns `AlreadyExists`.
+4. Release the repository lock and call `CreateApproval` with a short child-context deadline.
+5. Return the current purchase after the call succeeds. A failure leaves the purchase saved and returns a retryable transport error with retry instructions.
 
-### Purchase service
+An identical create retry uses the same purchase ID and calls the idempotent approval operation again. `CreateApproval` atomically creates at most one record per purchase ID and never resets an existing decision. This repairs a failed handoff or lost response without creating a duplicate. Returned purchase status may already be terminal if a reviewer decided it between calls.
 
-`services/purchase-service/` will own purchase request records and their lifecycle. It will validate purchase details, persist requests, and enforce valid status changes, including changes requested by the approval service.
+## Approval decisions and synchronization
 
-### Approval service
+Only PENDING -> APPROVED or PENDING -> REJECTED is allowed. Repeating the same terminal decision is safe; switching to the other terminal decision returns `FailedPrecondition`.
 
-`services/approval-service/` will own approval workflows and decisions. It will consult the purchase service through gRPC and send approval outcomes through an explicit service operation. It will not update purchase tables directly.
+The approval service records the decision locally before calling `SetApprovalStatus` on the purchase service. A failed call does not roll back that decision. Repeating `DecideApproval` with the same ID and status always retries propagation. The purchase service also accepts an identical status update and rejects a conflicting one.
 
-### Database and migrations
+There is no cross-service transaction. During a failure, reads can show a decided approval and a still-PENDING purchase. Recovery depends on the caller retrying the same operation; there is no background queue or reconciliation worker. A timeout is ambiguous: the peer may have completed the write before its response was lost.
 
-The initial development environment will use one PostgreSQL instance. Each service owns its tables even though the database infrastructure is shared. Versioned SQL changes will live in `database/migrations/`, with ownership identified when migrations are introduced.
+## Concurrency and contexts
 
-Cross-service calls are not a single database transaction. Before implementing approval-to-purchase updates, define retry behavior, idempotency (repeating an operation without duplicate effects), and recovery from partial failures. A local SQL transaction cannot make two services' updates atomic.
+Each repository uses a `sync.RWMutex`. Checks and changes happen within one write lock, so concurrent callers cannot create duplicate records or record conflicting decisions. Get/List return value snapshots rather than mutable pointers into shared maps. No mutex is held during a network call.
 
-### Policy assistant
+`context.Context` carries cancellation and deadlines. Each service-to-service call derives a short child deadline from the incoming context; an earlier caller deadline still wins. Generated gRPC clients handle Protocol Buffer serialization and transport, while services supply validation and domain decisions.
 
-The later RAG extension will split fictional policy documents into chunks, create embeddings, and store searchable vectors using PostgreSQL's pgvector extension. For each question, it will retrieve relevant chunks and pass that context to a model to generate an answer with source references. It should acknowledge missing evidence rather than invent policy requirements. Provider configuration and ingestion details are deferred to the AI milestone.
+Both servers expose the standard gRPC health service. Health indicates that the process serves RPCs; it does not assert that the peer is reachable or that all records are synchronized. Shutdown drains requests and falls back to forced cancellation after the configured timeout.
 
-## Go and gRPC concepts
+## Intentional limitations
 
-- **Go services:** Each service is a separate process with a focused responsibility. Go module boundaries and executable entry points will be introduced when implementation starts.
-- **Protocol Buffers:** `.proto` files in `proto/` define messages and service methods. Numeric field tags identify fields in the binary format, so existing tags must remain stable as contracts evolve.
-- **gRPC:** Generated Go client and server code implements the contract's transport layer. Services still need explicit business logic, validation, and error handling. Remote calls can fail or time out even when the caller is healthy.
-- **Contexts and deadlines:** A Go `context.Context` carries cancellation and deadlines through a request. Passing it into gRPC and database operations helps stop work when the caller disconnects or a deadline expires.
-- **Transport boundaries:** The browser receives JSON from the gateway; internal gRPC calls use Protocol Buffer messages. The gateway translates between these representations.
+Data and idempotency keys live only for the lifetime of each process. Restarting one service loses its records and can break consistency with its peer; restart both to reset this demonstration. Lists return all records sorted by ID with no pagination. `CreateApproval` validates ID syntax but does not verify purchase existence; its intended caller is the purchase service. There is no authorization around internal status operations.
 
-## Example purchase request flow
+Transport is plaintext for local development. The required default bind addresses (`:50051`, `:50052`) listen on all interfaces; use `127.0.0.1:50051` and `127.0.0.1:50052` to restrict listeners to the local machine. This milestone does not provide production security or durability.
 
-1. A user submits a purchase form in Vue.
-2. The frontend sends JSON to the gateway.
-3. The gateway validates the HTTP input and calls the purchase service over gRPC with a deadline.
-4. The purchase service enforces business rules and persists the request in PostgreSQL.
-5. The service returns a typed response; the gateway maps it to JSON for the frontend.
-
-## Incremental delivery and verification
-
-Begin with a tested create/get purchase request flow before adding approvals, the gateway, or the frontend. Introduce PostgreSQL and its local Docker Compose configuration when persistence is implemented. Expand Compose as new services are added.
-
-Use Go unit tests for business behavior, integration tests for PostgreSQL and service boundaries, and frontend type/build checks. Keep setup and validation commands aligned with the files that actually exist. All sample records, users, suppliers, and procurement policies must be fictional.
+See [backend.md](backend.md) for commands, error behavior, and verification.
