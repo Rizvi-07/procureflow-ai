@@ -22,7 +22,7 @@ Terminal 2:
 go run ./cmd/approval-service
 ```
 
-The servers listen on `:50051` and `:50052` respectively. Either can start first; both must be available for the full workflow. Logs are JSON and include the service name, RPC method, status code, and duration. Request payloads are not logged. Press Ctrl+C in each terminal to shut down. In-flight requests drain for up to five seconds before forced cancellation.
+New servers listen on `127.0.0.1:50051` and `127.0.0.1:50052` respectively. Either can start first; both must be available for the full workflow. Logs are JSON and include the service name, RPC method, status code, and duration. Request payloads are not logged. Press Ctrl+C in each terminal to shut down. In-flight requests drain for up to five seconds before forced cancellation.
 
 In a third terminal, run:
 
@@ -40,12 +40,16 @@ read purchase=<id> status=STATUS_APPROVED; create and decision retries succeeded
 
 The second command returns the same purchase ID, already APPROVED. Omitting `-request-id` generates a new key. In memory mode, restarting clears data. With `DATABASE_URL` set, restarting either service preserves records and idempotency keys.
 
+## Start the REST/JSON gateway
+
+With both services running, open another terminal and run `go run ./cmd/api-gateway`. The gateway is the browser HTTP entry point at `http://127.0.0.1:8080`; it never connects to PostgreSQL. See [api.md](api.md) for all five routes, curl/PowerShell examples, CORS, timeouts, and the DEMO-ONLY decision endpoint.
+
 ## Configuration
 
 Servers read shell environment variables; `.env` is a reference convention, not automatically loaded. Defaults:
 
-- `PURCHASE_SERVICE_GRPC_ADDR=:50051`: purchase listener.
-- `APPROVAL_SERVICE_GRPC_ADDR=:50052`: approval listener.
+- `PURCHASE_SERVICE_GRPC_ADDR=127.0.0.1:50051`: purchase listener.
+- `APPROVAL_SERVICE_GRPC_ADDR=127.0.0.1:50052`: approval listener.
 - `PURCHASE_SERVICE_GRPC_TARGET=localhost:50051`: destination for approval callbacks and the smoke client.
 - `APPROVAL_SERVICE_GRPC_TARGET=localhost:50052`: destination for purchase handoffs and the smoke client.
 - `GRPC_CALL_TIMEOUT=2s`: maximum duration of each service-to-service call.

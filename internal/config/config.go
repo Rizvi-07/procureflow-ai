@@ -25,8 +25,8 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
-		PurchaseAddr:   env("PURCHASE_SERVICE_GRPC_ADDR", ":50051"),
-		ApprovalAddr:   env("APPROVAL_SERVICE_GRPC_ADDR", ":50052"),
+		PurchaseAddr:   env("PURCHASE_SERVICE_GRPC_ADDR", "127.0.0.1:50051"),
+		ApprovalAddr:   env("APPROVAL_SERVICE_GRPC_ADDR", "127.0.0.1:50052"),
 		PurchaseTarget: env("PURCHASE_SERVICE_GRPC_TARGET", "localhost:50051"),
 		ApprovalTarget: env("APPROVAL_SERVICE_GRPC_TARGET", "localhost:50052"),
 	}

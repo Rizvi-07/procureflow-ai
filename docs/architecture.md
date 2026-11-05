@@ -1,12 +1,15 @@
 # ProcureFlow AI architecture
 
-## Current implementation: Phase 03
+## Current implementation: Phase 04
 
-The runnable backend has two Go processes communicating over gRPC. Each service depends on a context-aware repository interface. Without `DATABASE_URL`, it uses memory; with that variable set, it uses pgxpool and its own PostgreSQL schema. Both executables belong to one root Go module. Domain logic lives in `internal/purchase` and `internal/approval`; `cmd/` contains small entry points. The Protocol Buffer contracts are unchanged.
+The backend has a browser-facing Go REST/JSON gateway and two Go services communicating over gRPC. Each service depends on a context-aware repository interface. Without `DATABASE_URL`, it uses memory; with that variable set, it uses pgxpool and its own PostgreSQL schema. All three executables belong to one root Go module. The gateway has no database dependency. Domain logic lives in `internal/purchase` and `internal/approval`; `cmd/` contains small entry points. The Protocol Buffer contracts are unchanged.
 
 ```mermaid
 flowchart LR
     Client[Go smoke client] -->|Create / Get / List| Purchase[Purchase gRPC service :50051]
+    Browser[Future Vue frontend / HTTP client] -->|REST / JSON| Gateway[Go API gateway :8080]
+    Gateway -->|Create / Get / List over gRPC| Purchase
+    Gateway -->|DecideApproval over gRPC| Approval
     Client -->|Decide / Get / List| Approval[Approval gRPC service :50052]
     Purchase -->|CreateApproval with deadline| Approval
     Approval -->|SetApprovalStatus with deadline| Purchase
@@ -14,7 +17,7 @@ flowchart LR
     Approval -->|owned schema only| ApprovalStore[(approval.decisions)]
 ```
 
-The two schemas may share one PostgreSQL instance for the local demo. There are no cross-schema queries or foreign keys between service data. Docker, the REST/JSON gateway, frontend, authentication, and policy RAG remain future work. The original `services/` directories remain reserved; current backend code is under `cmd/` and `internal/`.
+The two schemas may share one PostgreSQL instance for the local demo. There are no cross-schema queries or foreign keys between service data. Docker, frontend, authentication, and policy RAG remain future work. The original `services/` and `api-gateway/` directories remain reserved; current backend code is under `cmd/` and `internal/`.
 
 ## Boundaries and Go packages
 
@@ -22,6 +25,7 @@ The two schemas may share one PostgreSQL instance for the local demo. There are 
 - `internal/approval` owns approval records and decisions, keyed by purchase ID.
 - `internal/domain` defines shared status values, validation helpers, and sentinel errors. It has no gRPC dependency.
 - `internal/rpc` translates generated messages into domain inputs and maps domain errors into gRPC status codes. Client adapters implement the small interfaces consumed by the services.
+- `internal/gateway` exposes five HTTP routes using `net/http`, validates JSON, applies CORS/body limits, maps transport errors, and calls generated gRPC clients. It does not access repositories or tables.
 - `internal/config` reads environment variables and rejects invalid addresses or durations.
 - `internal/postgres` manages connection pools and sanitizes database errors; it does not access service tables.
 - `migrations/` contains embedded SQL and the migration runner; only `cmd/migrate` performs schema changes.
@@ -42,6 +46,8 @@ A Go interface describes the behavior a caller needs. For example, purchase logi
 An identical create retry uses the same purchase ID and calls the idempotent approval operation again. `CreateApproval` atomically creates at most one record per purchase ID and never resets an existing decision. This repairs a failed handoff or lost response without creating a duplicate. Returned purchase status may already be terminal if a reviewer decided it between calls.
 
 ## Approval decisions and synchronization
+
+The HTTP decision endpoint is manual and **DEMO-ONLY**. Its caller-supplied `manager_id` is not authenticated. Manager ID/comment are validated but cannot be persisted by the existing status-only RPC; the HTTP response explicitly reports `metadata_persisted: false`. There is no chatbot or AI approval integration.
 
 Only PENDING -> APPROVED or PENDING -> REJECTED is allowed. Repeating the same terminal decision is safe; switching to the other terminal decision returns `FailedPrecondition`.
 
@@ -65,6 +71,6 @@ Both servers expose the standard gRPC health service. Health indicates that the 
 
 PostgreSQL mode preserves data and idempotency keys across restarts. It still requires the caller to retry failed cross-service synchronization: a durable APPROVED decision may coexist with a PENDING purchase until the identical decision is retried. There is no outbox or background repair worker. Memory mode remains ephemeral. Lists return all records with no pagination. `CreateApproval` validates ID syntax (a UUID in PostgreSQL mode) but does not verify purchase existence; its intended caller is the purchase service. There is no authorization around internal status operations.
 
-Transport is plaintext for local development. The default bind addresses (`:50051`, `:50052`) listen on all interfaces; use `127.0.0.1:50051` and `127.0.0.1:50052` to restrict listeners locally. Schema ownership is enforced by repository query boundaries; production deployment should also grant separate runtime database roles access only to their own schemas.
+Transport is plaintext for local development. New service processes default to `127.0.0.1:50051` and `127.0.0.1:50052`. Only the gateway exposes browser REST/JSON at `127.0.0.1:8080`, with CORS limited to the configured local Vue origin. CORS does not provide authentication. Schema ownership is enforced by repository query boundaries; production deployment should also grant separate runtime database roles access only to their own schemas.
 
-See [backend.md](backend.md) and [postgresql.md](postgresql.md) for commands, migration behavior, and verification.
+See [api.md](api.md), [backend.md](backend.md), and [postgresql.md](postgresql.md) for commands, migration behavior, and verification.
