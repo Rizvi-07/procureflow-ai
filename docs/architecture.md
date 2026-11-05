@@ -1,8 +1,8 @@
 # ProcureFlow AI architecture
 
-## Current implementation: Phase 05
+## Current implementation: Phase 06
 
-The Vue 3 frontend calls a browser-facing Go REST/JSON gateway, which calls two Go services over gRPC. Each service depends on a context-aware repository interface. Without `DATABASE_URL`, it uses memory; with that variable set, it uses pgxpool and its own PostgreSQL schema. All three backend executables belong to one root Go module. The gateway and browser have no database dependency. Domain logic lives in `internal/purchase` and `internal/approval`; `cmd/` contains small entry points. The REST and Protocol Buffer contracts are unchanged in Phase 05.
+The Vue 3 frontend calls a browser-facing Go REST/JSON gateway, which calls two Go services over gRPC. Each service depends on a context-aware repository interface. Without `DATABASE_URL`, it uses memory; with that variable set, it uses pgxpool and its own PostgreSQL schema. All three backend executables belong to one root Go module. The gateway and browser have no database dependency. Domain logic lives in `internal/purchase` and `internal/approval`; `cmd/` contains small entry points. Phase 06 adds local Compose deployment without changing REST or Protocol Buffer contracts.
 
 ```mermaid
 flowchart LR
@@ -17,7 +17,28 @@ flowchart LR
     Approval -->|owned schema only| ApprovalStore[(approval.decisions)]
 ```
 
-The two schemas may share one PostgreSQL instance for the local demo. There are no cross-schema queries or foreign keys between service data. Docker, authentication, and policy RAG remain future work. The original `services/` and `api-gateway/` directories remain reserved; current backend code is under `cmd/` and `internal/`.
+The two schemas share one PostgreSQL instance in Compose. There are no cross-schema queries or foreign keys between service data. Authentication and policy RAG remain future work. The original `services/` and `api-gateway/` directories remain reserved; current backend code is under `cmd/` and `internal/`.
+
+## Local container deployment
+
+Compose publishes only loopback frontend `5173` and gateway `8080`. Nginx serves the production Vue build from container port 8080. Its JavaScript calls the host browser address `http://localhost:8080`; Docker DNS names are used only between containers. The gateway permits the matching `http://localhost:5173` origin. Native service bind defaults remain unchanged; Compose overrides binds to `0.0.0.0` and peer targets to `purchase-service:50051` and `approval-service:50052`.
+
+```mermaid
+flowchart TD
+    Browser[Host browser] -->|localhost:5173| Frontend[Nginx static frontend / edge network]
+    Browser -->|localhost:8080 REST| Gateway[API gateway / edge and backend networks]
+    Gateway -->|private gRPC| Purchase[Purchase service / backend]
+    Gateway -->|private gRPC| Approval[Approval service / backend]
+    Purchase <-->|private gRPC| Approval
+    Purchase -->|purchase schema| DB[(PostgreSQL / backend)]
+    Approval -->|approval schema| DB
+    Migrate[One-shot migration job / backend] -->|schema and ledger| DB
+    DB --> Volume[Named postgres_data volume]
+```
+
+The internal backend network and unpublished ports keep gRPC/PostgreSQL off host interfaces. The frontend has no backend-network membership; the gateway has no database URL. Startup waits for PostgreSQL TCP readiness, successful migrations, and gRPC health before starting the gateway, then HTTP health before starting the frontend. Migrations rerun safely through their existing ledger. Go's small container health command uses the standard gRPC health RPC with a deadline rather than invoking business operations. Health is process readiness, not a guarantee that every dependency remains available.
+
+Go binaries run as a non-root user in small read-only runtime images; the frontend has a separate Node build and unprivileged Nginx runtime. A named volume retains PostgreSQL data when containers are recreated. Public DEVELOPMENT-ONLY credentials come from Compose defaults or ignored `.env`; optional AI configuration is absent. This deployment does not import or delete native database storage. See [docker.md](docker.md) for startup, address differences, and a persistence check.
 
 ## Frontend boundary
 
@@ -83,4 +104,4 @@ PostgreSQL mode preserves data and idempotency keys across restarts. It still re
 
 Transport is plaintext for local development. New service processes default to `127.0.0.1:50051` and `127.0.0.1:50052`. Only the gateway exposes browser REST/JSON at `127.0.0.1:8080`, with CORS limited to the configured local Vue origin. CORS does not provide authentication. Schema ownership is enforced by repository query boundaries; production deployment should also grant separate runtime database roles access only to their own schemas.
 
-See [api.md](api.md), [backend.md](backend.md), and [postgresql.md](postgresql.md) for commands, migration behavior, and verification.
+See [api.md](api.md), [backend.md](backend.md), [postgresql.md](postgresql.md), and [docker.md](docker.md) for commands, migration behavior, and verification.

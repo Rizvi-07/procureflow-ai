@@ -6,7 +6,7 @@ The project is built in small, independently testable milestones, with maintaina
 
 ## Current status
 
-**Phase 05: Vue procurement dashboard.** An accessible Vue 3 + TypeScript frontend calls the Go REST/JSON gateway to create purchases, list real requests, and approve or reject pending requests. The backend supports PostgreSQL or in-memory repositories. **Demo identity only: `manager_id` is not authenticated, and manager/comment metadata is not persisted.** Docker setup, authentication, and AI remain future work.
+**Phase 06: local Docker Compose deployment.** The Vue 3 + TypeScript dashboard, REST gateway, two Go gRPC services, and PostgreSQL run together with health checks and automatic migrations. Purchase/approval state lives in a named volume. Native development still supports PostgreSQL or in-memory repositories. **Demo identity only: `manager_id` is not authenticated, and manager/comment metadata is not persisted.** Authentication and AI remain future work.
 
 See [the backend run guide](docs/backend.md) for two-terminal startup, configuration, a smoke client, tests, and Protocol Buffer generation.
 
@@ -33,6 +33,7 @@ Start the HTTP gateway with `go run ./cmd/api-gateway` once both gRPC services a
 - Implemented: REST/JSON gateway for listing, reading, creating, and manually deciding purchases.
 - Implemented: responsive Vue dashboard, purchasing forms, manual review, refresh, filtering, and clear loading/error states.
 - Implemented: PostgreSQL persistence through pgxpool, isolated purchase/approval schemas, and versioned migrations.
+- Implemented: multistage container images, private database/gRPC networking, migration-gated startup, and persistent local Docker Compose deployment.
 - Planned: a policy assistant using fictional documents.
 
 ## Repository layout
@@ -50,6 +51,7 @@ cmd/
   approval-service/          Approval server entry point
   smoke/                     Create -> approve -> read demonstration
   migrate/                   Apply PostgreSQL migrations
+  healthcheck/               Deadline-bound container HTTP/gRPC health probe
 internal/
   gateway/                   HTTP handlers, gRPC clients, and gateway tests
   purchase/                  Purchase rules and memory/PostgreSQL repositories
@@ -69,6 +71,9 @@ docs/
   architecture.md           Current system design and service boundaries
   backend.md                Runnable backend guide
   api.md                    REST API, DEMO-ONLY decisions, and HTTP examples
+  docker.md                 Compose startup, logs, networking, and persistence demo
+Dockerfile                   Go multistage build with service/gateway/migration targets
+docker-compose.yml           Local deployment with a persistent PostgreSQL volume
 ```
 
 Empty application directories contain `.gitkeep` placeholders so Git can track them. Remove a placeholder when its directory gains real files.
@@ -77,7 +82,21 @@ Empty application directories contain `.gitkeep` placeholders so Git can track t
 
 The backend requires **Go 1.26 or newer** and PostgreSQL 14+ for persistent mode (verified with PostgreSQL 18.3). The in-memory demo does not require PostgreSQL. Generated Protocol Buffer code is included, so `protoc` is needed only when changing the contract. See [PostgreSQL setup and testing](docs/postgresql.md).
 
-Use `.env.example` as the configuration reference. Servers read environment variables from the shell; they do **not** automatically load `.env`. The run guide shows PowerShell examples. Never commit `.env` files, credentials, or API keys.
+Use `.env.example` as the configuration reference. Native Go servers read environment variables from the shell; they do **not** automatically load `.env`. Docker Compose automatically reads root `.env` and uses the separate `COMPOSE_` settings. Never commit local `.env` files, real credentials, or API keys.
+
+## Docker Compose quickstart
+
+With Docker Desktop running Linux containers, from the repository root:
+
+```powershell
+docker compose config
+docker compose up -d --build
+docker compose ps -a
+```
+
+Open **http://localhost:5173/**; the API is **http://localhost:8080**. Only these loopback ports are published. The public **DEVELOPMENT-ONLY** database defaults require no setup or AI keys. Migrations finish before services accept traffic; `migrate` exiting with code 0 is expected. Stop with `docker compose down`, which preserves the named database volume, and resume with `docker compose up -d --wait`.
+
+See [the Docker guide](docs/docker.md) for exact PowerShell commands, port overrides, logs, host/container addresses, and a create/approve/restart/read persistence check. This deployment uses its own volume and preserves any existing native database under `tmp/`.
 
 ## Frontend quickstart
 
@@ -137,9 +156,9 @@ Read [docs/architecture.md](docs/architecture.md) for the design. Local AI assis
 | 03 | Completed: PostgreSQL persistence and service-owned schemas | Database constraint, migration, concurrency, and restart checks |
 | 04 | Completed: Go REST/JSON gateway backed by gRPC | HTTP handler tests, live route checks, and Go build |
 | 05 | Completed: accessible Vue procurement dashboard | Frontend unit/component tests, live API flows, TypeScript check, and production build |
-| 06 | Complete Docker Compose workflow and interview preparation | End-to-end smoke checks and documented demo walkthrough |
+| 06 | Completed: local Docker Compose deployment | Health checks, automatic migrations, live UI/API flows, and persistence across container recreation |
 
-The requested Phase 05 frontend scope supersedes the original AI milestone. Policy RAG remains future work. Each milestone should remain small enough to review and verify independently.
+The requested Phase 05 frontend and Phase 06 infrastructure scopes supersede the original roadmap. Policy RAG and interview preparation remain future work. Each milestone should remain small enough to review and verify independently.
 
 ## Data and Git workflow
 

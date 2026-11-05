@@ -1,0 +1,157 @@
+name: procureflow-ai
+
+x-database-environment: &database-environment
+  # Public, DEVELOPMENT-ONLY defaults. Use simple URI-safe local values.
+  DATABASE_URL: "postgres://${COMPOSE_POSTGRES_USER:-procureflow_dev}:${COMPOSE_POSTGRES_PASSWORD:-procureflow_dev_only}@postgres:5432/${COMPOSE_POSTGRES_DB:-procureflow_dev}?sslmode=disable"
+  DATABASE_TIMEOUT: 5s
+
+x-go-runtime: &go-runtime
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 10s
+  networks: [backend]
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${COMPOSE_POSTGRES_USER:-procureflow_dev}
+      POSTGRES_PASSWORD: ${COMPOSE_POSTGRES_PASSWORD:-procureflow_dev_only}
+      POSTGRES_DB: ${COMPOSE_POSTGRES_DB:-procureflow_dev}
+    volumes:
+      # PostgreSQL 18 keeps its versioned PGDATA beneath this directory.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      # TCP avoids accepting the socket-only temporary initialization server.
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 15s
+    networks: [backend]
+
+  migrate:
+    build:
+      context: .
+      target: migrate
+    environment: *database-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [backend]
+
+  purchase-service:
+    <<: *go-runtime
+    build:
+      context: .
+      target: purchase-service
+    environment:
+      <<: *database-environment
+      PURCHASE_SERVICE_GRPC_ADDR: 0.0.0.0:50051
+      PURCHASE_SERVICE_GRPC_TARGET: purchase-service:50051
+      APPROVAL_SERVICE_GRPC_TARGET: approval-service:50052
+      GRPC_CALL_TIMEOUT: 2s
+      SHUTDOWN_TIMEOUT: 5s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, healthcheck, -grpc, "127.0.0.1:50051", -service, procureflow.v1.PurchaseService]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 10s
+
+  approval-service:
+    <<: *go-runtime
+    build:
+      context: .
+      target: approval-service
+    environment:
+      <<: *database-environment
+      APPROVAL_SERVICE_GRPC_ADDR: 0.0.0.0:50052
+      PURCHASE_SERVICE_GRPC_TARGET: purchase-service:50051
+      APPROVAL_SERVICE_GRPC_TARGET: approval-service:50052
+      GRPC_CALL_TIMEOUT: 2s
+      SHUTDOWN_TIMEOUT: 5s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, healthcheck, -grpc, "127.0.0.1:50052", -service, procureflow.v1.ApprovalService]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 10s
+
+  api-gateway:
+    <<: *go-runtime
+    build:
+      context: .
+      target: api-gateway
+    environment:
+      API_GATEWAY_HTTP_ADDR: 0.0.0.0:8080
+      PURCHASE_SERVICE_GRPC_TARGET: purchase-service:50051
+      APPROVAL_SERVICE_GRPC_TARGET: approval-service:50052
+      VUE_ORIGIN: "http://localhost:${COMPOSE_FRONTEND_PORT:-5173}"
+      GRPC_CALL_TIMEOUT: 2s
+      HTTP_MAX_BODY_BYTES: "65536"
+      HTTP_READ_HEADER_TIMEOUT: 5s
+      HTTP_READ_TIMEOUT: 10s
+      HTTP_WRITE_TIMEOUT: 15s
+      HTTP_IDLE_TIMEOUT: 60s
+      SHUTDOWN_TIMEOUT: 5s
+    ports:
+      - "127.0.0.1:${COMPOSE_GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      purchase-service:
+        condition: service_healthy
+      approval-service:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, healthcheck, -http, "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 5s
+    networks: [backend, edge]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: "http://localhost:${COMPOSE_GATEWAY_PORT:-8080}"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      - "127.0.0.1:${COMPOSE_FRONTEND_PORT:-5173}:8080"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [edge]
+
+volumes:
+  postgres_data:
+
+networks:
+  backend:
+    internal: true
+  edge:

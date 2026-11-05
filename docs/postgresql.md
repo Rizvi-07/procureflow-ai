@@ -45,7 +45,7 @@ The database created during Phase 03 verification is also used by the current lo
 - `tmp/phase03-pg-<id>/` contains PostgreSQL's data directory, including saved purchases and approvals.
 - `tmp/phase03-postgres.json` records that directory's path and port. It is local machine metadata, not an application configuration file.
 
-Although the directory is named `tmp`, this retained cluster is active local database storage. Git ignores it, and a fresh clone does not include it. Do not include it in automatic temporary-file cleanup. The integration tests' separate `procureflow_test_<uuid>` databases are dropped by the tests; this retained demo cluster has a different lifecycle. Remove it only when intentionally discarding the local demo data, after stopping both services and PostgreSQL. A future infrastructure milestone can provide a dedicated development data location or Docker volume.
+Although the directory is named `tmp`, this retained cluster is active local database storage. Git ignores it, and a fresh clone does not include it. Do not include it in automatic temporary-file cleanup. The integration tests' separate `procureflow_test_<uuid>` databases are dropped by the tests; this retained demo cluster has a different lifecycle. Remove it only when intentionally discarding the local demo data, after stopping both services and PostgreSQL. Phase 06 now provides a separate named Docker volume through [Compose](docker.md); it neither imports nor removes this existing native storage.
 
 From the repository root, inspect the saved cluster:
 
