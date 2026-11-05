@@ -172,7 +172,7 @@ func TestPostgresMigrationsAndConstraints(t *testing.T) {
 		}
 	}
 	var count int
-	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM public.procureflow_migrations`).Scan(&count); err != nil || count != 2 {
+	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM public.procureflow_migrations`).Scan(&count); err != nil || count != 3 {
 		t.Fatalf("migration ledger=%d err=%v", count, err)
 	}
 	if _, err := pr.Get(ctx, p.ID); err != nil {

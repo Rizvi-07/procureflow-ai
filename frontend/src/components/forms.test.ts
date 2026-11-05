@@ -117,7 +117,9 @@ describe("manager form", () => {
         }),
       );
       await vi.waitFor(() => expect(done).toHaveBeenCalledOnce());
-      expect(root.textContent).toContain("Demo identity only");
+      expect(root.textContent).toContain(
+        "Your signed-in manager identity is verified",
+      );
     },
   );
   it("keeps a failed decision visible with useful retry guidance", async () => {

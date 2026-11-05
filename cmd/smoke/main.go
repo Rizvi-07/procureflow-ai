@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pb "procureflow-ai/gen/procureflow/v1"
+	"procureflow-ai/internal/auth"
 	"procureflow-ai/internal/config"
 	"procureflow-ai/internal/rpc"
 
@@ -51,15 +52,27 @@ func run(requestID string) error {
 			return fmt.Errorf("service is not serving")
 		}
 	}
+	key, err := auth.LoadServiceKey()
+	if err != nil {
+		return err
+	}
+	employeeCtx, err := auth.Outgoing(ctx, key, "actor", "employee-demo", auth.Employee)
+	if err != nil {
+		return err
+	}
+	managerCtx, err := auth.Outgoing(ctx, key, "actor", "manager-demo", auth.Manager)
+	if err != nil {
+		return err
+	}
 	purchases := pb.NewPurchaseServiceClient(pconn)
 	approvals := pb.NewApprovalServiceClient(aconn)
 	input := &pb.CreatePurchaseRequest{ClientRequestId: requestID, EmployeeId: "employee-demo", ItemName: "Fictional desk lamp", Quantity: 2, UnitPriceCents: 2500}
-	p, err := purchases.CreatePurchase(ctx, input)
+	p, err := purchases.CreatePurchase(employeeCtx, input)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("created purchase=%s total_cents=%d status=%s\n", p.Id, p.TotalCents, p.Status)
-	repeat, err := purchases.CreatePurchase(ctx, input)
+	repeat, err := purchases.CreatePurchase(employeeCtx, input)
 	if err != nil {
 		return err
 	}
@@ -67,11 +80,11 @@ func run(requestID string) error {
 		return fmt.Errorf("create idempotency failed")
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := approvals.DecideApproval(ctx, &pb.DecideApprovalRequest{PurchaseId: p.Id, Status: pb.Status_STATUS_APPROVED}); err != nil {
+		if _, err := approvals.DecideApproval(managerCtx, &pb.DecideApprovalRequest{PurchaseId: p.Id, Status: pb.Status_STATUS_APPROVED}); err != nil {
 			return err
 		}
 	}
-	p, err = purchases.GetPurchase(ctx, &pb.GetPurchaseRequest{PurchaseId: p.Id})
+	p, err = purchases.GetPurchase(employeeCtx, &pb.GetPurchaseRequest{PurchaseId: p.Id})
 	if err != nil {
 		return err
 	}

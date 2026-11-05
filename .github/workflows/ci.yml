@@ -14,6 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
+      policy-postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: procureflow_ci
+          POSTGRES_PASSWORD: procureflow_ci_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U procureflow_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
       postgres:
         image: postgres:18-alpine
         env:
@@ -30,6 +43,7 @@ jobs:
           --health-retries 15
     env:
       TEST_DATABASE_URL: postgres://procureflow_ci:procureflow_ci_only@127.0.0.1:5432/postgres?sslmode=disable
+      AI_TEST_DATABASE_URL: postgres://procureflow_ci:procureflow_ci_only@127.0.0.1:5433/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@v6
         with:
@@ -52,7 +66,7 @@ jobs:
         shell: bash
         run: |
           go test -v -count=1 ./... | tee "$RUNNER_TEMP/go-tests.log"
-          if grep -Fq 'PostgreSQL integration NOT RUN' "$RUNNER_TEMP/go-tests.log"; then
+          if grep -Eq 'PostgreSQL integration NOT RUN|AI pgvector integration NOT RUN' "$RUNNER_TEMP/go-tests.log"; then
             echo '::error::Configured PostgreSQL integration tests skipped; investigate the service or test role.'
             exit 1
           fi

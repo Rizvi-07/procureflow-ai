@@ -1,11 +1,16 @@
 # Running the backend
 
+The optional Phase 08 policy-only service and import command are documented in
+[policy-assistant.md](policy-assistant.md). They do not change procurement RPCs
+or require an API key for the backend commands below.
+
 ## Prerequisites
 
-Use Go 1.26 or newer. Run all commands from the repository root. Dependencies are pinned in `go.mod` and `go.sum`. Generated protobuf files are included. The default demo uses memory; for PostgreSQL persistence, follow [postgresql.md](postgresql.md) to set `DATABASE_URL` in both server terminals and run migrations before starting them.
+Use Go 1.26 or newer. Run all commands from the repository root. Dependencies are pinned in `go.mod` and `go.sum`. Generated protobuf files are included. The direct gRPC demo can use memory, but browser login/signup now requires PostgreSQL identity storage; prepare [accounts and auth tables](authentication.md#native-development) before starting the gateway. For procurement persistence, follow [postgresql.md](postgresql.md) to set `DATABASE_URL` in both server terminals and run migrations before starting them.
 
 ```powershell
 go mod download
+go run ./cmd/auth-setup # fresh install only; existing demo uses -admin-only
 ```
 
 ## Start two servers
@@ -31,7 +36,7 @@ go run ./cmd/smoke -request-id interview-demo-1
 go run ./cmd/smoke -request-id interview-demo-1
 ```
 
-The client waits for both health endpoints, creates a fictional two-lamp purchase totaling 5000 cents, repeats creation, approves twice, and reads the purchase back. It exits nonzero on any failed check. Example first-run output (the ID varies):
+This internal developer tool holds the privileged service signing key and signs fictional employee/manager claims; it does not test password login. Use `scripts/smoke.ps1` for the actual REST session flow. The client waits for both health endpoints, creates a fictional two-lamp purchase totaling 5000 cents, repeats creation, approves twice, and reads the purchase back. It exits nonzero on any failed check. Example first-run output (the ID varies):
 
 ```text
 created purchase=<id> total_cents=5000 status=STATUS_PENDING
@@ -42,11 +47,11 @@ The second command returns the same purchase ID, already APPROVED. Omitting `-re
 
 ## Start the REST/JSON gateway
 
-With both services running, open another terminal and run `go run ./cmd/api-gateway`. The gateway is the browser HTTP entry point at `http://127.0.0.1:8080`; it never connects to PostgreSQL. See [api.md](api.md) for all five routes, curl/PowerShell examples, CORS, timeouts, and the DEMO-ONLY decision endpoint.
+With both services running, open another terminal and run `go run ./cmd/api-gateway`. The gateway is the browser HTTP entry point at `http://127.0.0.1:8080`; it connects only to auth.* through AUTH_DATABASE_URL; procurement tables stay behind gRPC. See [api.md](api.md) for procurement/auth/admin routes, curl/PowerShell examples, CORS, timeouts, and authenticated manager decisions.
 
 ## Configuration
 
-Servers read shell environment variables; `.env` is a reference convention, not automatically loaded. Defaults:
+Servers read shell environment variables; `.env` is a reference convention, not automatically loaded. Defaults (also see [authentication configuration](authentication.md#native-development)):
 
 - `PURCHASE_SERVICE_GRPC_ADDR=127.0.0.1:50051`: purchase listener.
 - `APPROVAL_SERVICE_GRPC_ADDR=127.0.0.1:50052`: approval listener.
@@ -69,7 +74,7 @@ $env:GRPC_CALL_TIMEOUT = '2s'
 $env:SHUTDOWN_TIMEOUT = '5s'
 ```
 
-Listen addresses may have an empty host; peer targets require a host. Ports must be 1-65535 and durations must be positive. Invalid configuration exits with a structured error. Plaintext gRPC and no authentication are intentional for this local exercise; bind to loopback when running on a shared network.
+Listen addresses may have an empty host; peer targets require a host. Ports must be 1-65535 and durations must be positive. Invalid configuration exits with a structured error. Plaintext gRPC is local-only. Every business RPC requires signed internal identity metadata; bind to loopback and protect the signing key. See [authentication.md](authentication.md).
 
 ## Contract and validation
 
@@ -122,6 +127,7 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 $env:PATH = "$(go env GOPATH)\bin;$env:PATH"
 protoc --go_out=. --go_opt=module=procureflow-ai --go-grpc_out=. --go-grpc_opt=module=procureflow-ai proto/procureflow/v1/procurement.proto
+protoc --go_out=. --go_opt=module=procureflow-ai --go-grpc_out=. --go-grpc_opt=module=procureflow-ai proto/assistant/v1/assistant.proto
 ```
 
 Protocol Buffers define the wire contract; these commands generate both message types and client/server interfaces. Implement server behavior in `internal/`, not in generated files. Keep field numbers stable and reserve removed numbers. See the [official Go gRPC quick start](https://grpc.io/docs/languages/go/quickstart/) and [Go gRPC API reference](https://pkg.go.dev/google.golang.org/grpc) for generator and client APIs.

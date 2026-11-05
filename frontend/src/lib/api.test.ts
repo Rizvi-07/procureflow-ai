@@ -17,7 +17,44 @@ afterEach(() => {
 });
 
 describe("typed gateway client", () => {
-  it("uses the configured URL, exact integers, and no credentials", async () => {
+  it("uses the session CSRF token for mutations and clears it on logout", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            user: {
+              id: "emp-101",
+              username: "employee.demo",
+              name: "Demo",
+              role: "employee",
+            },
+            csrf_token: "session-csrf",
+            expires_at: "2030-01-01T00:00:00Z",
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(purchase)))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ signed_out: true })),
+      );
+    vi.stubGlobal("fetch", fetcher);
+    const client = createApiClient("http://localhost:8080");
+    await client.login("employee.demo", "fictional-password");
+    await client.create(purchase);
+    await client.logout();
+    expect(fetcher.mock.calls[0][1].headers["X-CSRF-Token"]).toBeUndefined();
+    expect(fetcher.mock.calls[1][1].headers["X-CSRF-Token"]).toBe(
+      "session-csrf",
+    );
+    expect(fetcher.mock.calls[2][1].headers["X-CSRF-Token"]).toBe(
+      "session-csrf",
+    );
+    expect(
+      fetcher.mock.calls.every((c) => c[1].credentials === "include"),
+    ).toBe(true);
+  });
+  it("uses the configured URL, exact integers, and cookie credentials", async () => {
     const fetcher = vi
       .fn()
       .mockResolvedValue(
@@ -38,7 +75,7 @@ describe("typed gateway client", () => {
     expect(fetcher.mock.calls[0][0]).toBe(
       "http://localhost:8080/api/purchases",
     );
-    expect(fetcher.mock.calls[0][1].credentials).toBe("omit");
+    expect(fetcher.mock.calls[0][1].credentials).toBe("include");
     expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual(input);
   });
   it("reads real lists without inventing dates and rejects unsafe numbers", async () => {
@@ -64,20 +101,18 @@ describe("typed gateway client", () => {
   it("preserves controlled error and retry semantics", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(
-            JSON.stringify({
-              error: {
-                code: "UNAVAILABLE",
-                message: "Retry the same request.",
-                retryable: true,
-              },
-            }),
-            { status: 503 },
-          ),
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "UNAVAILABLE",
+              message: "Retry the same request.",
+              retryable: true,
+            },
+          }),
+          { status: 503 },
         ),
+      ),
     );
     await expect(
       createApiClient("http://localhost:8080").list(),
@@ -115,18 +150,16 @@ describe("typed gateway client", () => {
     ).rejects.toMatchObject({ code: "TIMEOUT", retryable: true });
   });
   it("sends manual decisions to the gateway with explicit demo metadata", async () => {
-    const fetcher = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            purchase_id: "request-1",
-            status: "APPROVED",
-            demo_only: true,
-            metadata_persisted: false,
-          }),
-        ),
-      );
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          purchase_id: "request-1",
+          status: "APPROVED",
+          demo_only: false,
+          metadata_persisted: false,
+        }),
+      ),
+    );
     vi.stubGlobal("fetch", fetcher);
     await createApiClient("http://localhost:8080").decide("request-1", {
       manager_id: "manager-demo",

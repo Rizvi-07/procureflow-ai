@@ -13,12 +13,14 @@ import (
 
 	pb "procureflow-ai/gen/procureflow/v1"
 	"procureflow-ai/internal/approval"
+	"procureflow-ai/internal/auth"
 	"procureflow-ai/internal/purchase"
 	"procureflow-ai/internal/rpc"
 	"procureflow-ai/internal/server"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 )
@@ -66,10 +68,35 @@ func (h *faultyPurchase) SetApprovalStatus(ctx context.Context, req *pb.SetAppro
 }
 
 type pair struct {
-	p  pb.PurchaseServiceClient
-	a  pb.ApprovalServiceClient
-	ph *faultyPurchase
-	ah *faultyApproval
+	purchaseTarget string
+	approvalTarget string
+	p              pb.PurchaseServiceClient
+	a              pb.ApprovalServiceClient
+	ph             *faultyPurchase
+	ah             *faultyApproval
+}
+
+var transportKey = []byte("01234567890123456789012345678901")
+
+// Existing transport scenarios deliberately exercise authorized identities.
+// Separate authorization tests below use fixed actors, never method-based roles.
+func scenarioClient(target string) (*grpc.ClientConn, error) {
+	return grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoke grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		kind, id, role := "actor", "employee-demo", auth.Manager
+		switch method {
+		case "/procureflow.v1.PurchaseService/SetApprovalStatus":
+			kind, id, role = "service", "approval-service", ""
+		case "/procureflow.v1.ApprovalService/CreateApproval":
+			kind, id, role = "service", "purchase-service", ""
+		case "/procureflow.v1.ApprovalService/DecideApproval":
+			id = "manager-demo"
+		}
+		out, err := auth.Outgoing(ctx, transportKey, kind, id, role)
+		if err != nil {
+			return err
+		}
+		return invoke(out, method, req, reply, cc, opts...)
+	}))
 }
 
 func startPair(t *testing.T) pair {
@@ -84,12 +111,12 @@ func startPair(t *testing.T) pair {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { al.Close() })
-	pc, err := rpc.Dial(pl.Addr().String())
+	pc, err := scenarioClient(pl.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { pc.Close() })
-	ac, err := rpc.Dial(al.Addr().String())
+	ac, err := scenarioClient(al.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,10 +124,15 @@ func startPair(t *testing.T) pair {
 	p := pb.NewPurchaseServiceClient(pc)
 	a := pb.NewApprovalServiceClient(ac)
 	ph := &faultyPurchase{PurchaseHandler: &rpc.PurchaseHandler{Service: purchase.NewService(purchase.NewRepository(), rpc.ApprovalClient{Client: a}, 100*time.Millisecond)}}
-	ah := &faultyApproval{ApprovalHandler: &rpc.ApprovalHandler{Service: approval.NewService(approval.NewRepository(), rpc.PurchaseClient{Client: p}, 100*time.Millisecond)}}
+	ownerConnection, err := grpc.NewClient(pl.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithUnaryInterceptor(auth.ServiceClient(transportKey, "approval-service")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ownerConnection.Close() })
+	ah := &faultyApproval{ApprovalHandler: &rpc.ApprovalHandler{Service: approval.NewService(approval.NewRepository(), rpc.PurchaseClient{Client: p}, 100*time.Millisecond), Owners: pb.NewPurchaseServiceClient(ownerConnection)}}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	ps := server.New(logger, pb.PurchaseService_ServiceDesc.ServiceName, func(s *grpc.Server) { pb.RegisterPurchaseServiceServer(s, ph) })
-	as := server.New(logger, pb.ApprovalService_ServiceDesc.ServiceName, func(s *grpc.Server) { pb.RegisterApprovalServiceServer(s, ah) })
+	ps := server.New(logger, pb.PurchaseService_ServiceDesc.ServiceName, func(s *grpc.Server) { pb.RegisterPurchaseServiceServer(s, ph) }, grpc.ChainUnaryInterceptor(auth.ServerInterceptor(transportKey)))
+	as := server.New(logger, pb.ApprovalService_ServiceDesc.ServiceName, func(s *grpc.Server) { pb.RegisterApprovalServiceServer(s, ah) }, grpc.ChainUnaryInterceptor(auth.ServerInterceptor(transportKey)))
 	t.Cleanup(ps.Stop)
 	t.Cleanup(as.Stop)
 	go func() { _ = ps.Serve(pl) }()
@@ -116,7 +148,7 @@ func startPair(t *testing.T) pair {
 			t.Fatalf("health=%v err=%v", h, err)
 		}
 	}
-	return pair{p: p, a: a, ph: ph, ah: ah}
+	return pair{p: p, a: a, ph: ph, ah: ah, purchaseTarget: pl.Addr().String(), approvalTarget: al.Addr().String()}
 }
 
 func input() *pb.CreatePurchaseRequest {

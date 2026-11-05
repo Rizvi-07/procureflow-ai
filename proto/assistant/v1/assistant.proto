@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package assistant.v1;
+option go_package = "procureflow-ai/gen/assistant/v1;assistantv1";
+
+// Policy answers only. No purchase, decision, order lookup, or tool RPC exists.
+service AssistantService {
+  rpc AnswerPolicy(AnswerPolicyRequest) returns (AnswerPolicyResponse);
+}
+
+message AnswerPolicyRequest { string question = 1; }
+message PolicySource {
+  string document = 1;
+  string section = 2;
+  int32 chunk_index = 3;
+  // Exact substring checked against the retrieved chunk by the service.
+  string quote = 4;
+}
+message AnswerPolicyResponse {
+  bool configured = 1;
+  string answer = 2;
+  repeated PolicySource sources = 3;
+}

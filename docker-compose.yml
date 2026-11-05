@@ -5,6 +5,9 @@ x-database-environment: &database-environment
   DATABASE_URL: "postgres://${COMPOSE_POSTGRES_USER:-procureflow_dev}:${COMPOSE_POSTGRES_PASSWORD:-procureflow_dev_only}@postgres:5432/${COMPOSE_POSTGRES_DB:-procureflow_dev}?sslmode=disable"
   DATABASE_TIMEOUT: 5s
 
+x-auth-database-environment: &auth-database-environment
+  AUTH_DATABASE_URL: "postgres://${COMPOSE_POSTGRES_USER:-procureflow_dev}:${COMPOSE_POSTGRES_PASSWORD:-procureflow_dev_only}@postgres:5432/${COMPOSE_POSTGRES_DB:-procureflow_dev}?sslmode=disable"
+
 x-go-runtime: &go-runtime
   restart: unless-stopped
   read_only: true
@@ -12,6 +15,27 @@ x-go-runtime: &go-runtime
   security_opt: [no-new-privileges:true]
   stop_grace_period: 10s
   networks: [backend]
+
+x-assistant-environment: &assistant-environment
+  # A separate AI database; never point this URL at purchase/approval tables.
+  AI_DATABASE_URL: "postgres://${COMPOSE_AI_POSTGRES_USER:-policy_dev}:${COMPOSE_AI_POSTGRES_PASSWORD:-policy_dev_only}@ai-postgres:5432/${COMPOSE_AI_POSTGRES_DB:-procureflow_policy_dev}?sslmode=disable"
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+  CHAT_MODEL: ${CHAT_MODEL:-}
+  AI_TOP_K: ${AI_TOP_K:-3}
+  AI_MAX_COSINE_DISTANCE: ${AI_MAX_COSINE_DISTANCE:-0.35}
+  AI_MAX_OUTPUT_TOKENS: ${AI_MAX_OUTPUT_TOKENS:-512}
+  ASSISTANT_REQUEST_TIMEOUT: ${ASSISTANT_REQUEST_TIMEOUT:-8s}
+  AI_PROVIDER_TIMEOUT: ${AI_PROVIDER_TIMEOUT:-6s}
+
+x-auth-volume: &auth-volume
+  type: bind
+  source: ./secrets/service-auth.key
+  target: /run/secrets/service-auth.key
+  read_only: true
+  bind:
+    create_host_path: false
 
 services:
   postgres:
@@ -47,12 +71,42 @@ services:
     security_opt: [no-new-privileges:true]
     networks: [backend]
 
+  auth-seed:
+    build:
+      context: .
+      target: auth-seed
+    environment: *auth-database-environment
+    volumes:
+      - type: bind
+        source: ./secrets/auth-users.json
+        target: /run/secrets/auth-users.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./secrets/admin-account.json
+        target: /run/secrets/admin-account.json
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [backend]
+
   purchase-service:
     <<: *go-runtime
     build:
       context: .
       target: purchase-service
+    volumes:
+      - *auth-volume
     environment:
+      SERVICE_AUTH_KEY_FILE: /run/secrets/service-auth.key
       <<: *database-environment
       PURCHASE_SERVICE_GRPC_ADDR: 0.0.0.0:50051
       PURCHASE_SERVICE_GRPC_TARGET: purchase-service:50051
@@ -74,7 +128,10 @@ services:
     build:
       context: .
       target: approval-service
+    volumes:
+      - *auth-volume
     environment:
+      SERVICE_AUTH_KEY_FILE: /run/secrets/service-auth.key
       <<: *database-environment
       APPROVAL_SERVICE_GRPC_ADDR: 0.0.0.0:50052
       PURCHASE_SERVICE_GRPC_TARGET: purchase-service:50051
@@ -96,11 +153,18 @@ services:
     build:
       context: .
       target: api-gateway
+    volumes:
+      - *auth-volume
     environment:
+      <<: *auth-database-environment
+      AUTH_COOKIE_SECURE: "${AUTH_COOKIE_SECURE:-false}" # false only for localhost HTTP
+      SERVICE_AUTH_KEY_FILE: /run/secrets/service-auth.key
       API_GATEWAY_HTTP_ADDR: 0.0.0.0:8080
       PURCHASE_SERVICE_GRPC_TARGET: purchase-service:50051
       APPROVAL_SERVICE_GRPC_TARGET: approval-service:50052
       VUE_ORIGIN: "http://localhost:${COMPOSE_FRONTEND_PORT:-5173}"
+      ASSISTANT_GRPC_TARGET: ${ASSISTANT_GRPC_TARGET:-}
+      ASSISTANT_CALL_TIMEOUT: ${ASSISTANT_CALL_TIMEOUT:-10s}
       GRPC_CALL_TIMEOUT: 2s
       HTTP_MAX_BODY_BYTES: "65536"
       HTTP_READ_HEADER_TIMEOUT: 5s
@@ -111,6 +175,8 @@ services:
     ports:
       - "127.0.0.1:${COMPOSE_GATEWAY_PORT:-8080}:8080"
     depends_on:
+      auth-seed:
+        condition: service_completed_successfully
       purchase-service:
         condition: service_healthy
       approval-service:
@@ -121,7 +187,64 @@ services:
       timeout: 4s
       retries: 10
       start_period: 5s
-    networks: [backend, edge]
+    networks: [backend, edge, ai]
+
+  ai-postgres:
+    profiles: [assistant]
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${COMPOSE_AI_POSTGRES_USER:-policy_dev}
+      POSTGRES_PASSWORD: ${COMPOSE_AI_POSTGRES_PASSWORD:-policy_dev_only}
+      POSTGRES_DB: ${COMPOSE_AI_POSTGRES_DB:-procureflow_policy_dev}
+    volumes:
+      - ai_postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 15s
+    networks: [ai]
+
+  assistant-service:
+    <<: *go-runtime
+    profiles: [assistant]
+    build:
+      context: .
+      target: assistant-service
+    volumes:
+      - *auth-volume
+    environment:
+      SERVICE_AUTH_KEY_FILE: /run/secrets/service-auth.key
+      <<: *assistant-environment
+      ASSISTANT_GRPC_ADDR: 0.0.0.0:50053
+    depends_on:
+      ai-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, healthcheck, -grpc, "127.0.0.1:50053", -service, assistant.v1.AssistantService]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 10s
+    # Outbound provider access is separate from the private procurement network.
+    networks: [ai, provider]
+
+  policy-import:
+    profiles: [assistant-tools]
+    build:
+      context: .
+      target: policy-import
+    environment: *assistant-environment
+    depends_on:
+      ai-postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [ai, provider]
 
   frontend:
     build:
@@ -150,8 +273,12 @@ services:
 
 volumes:
   postgres_data:
+  ai_postgres_data:
 
 networks:
   backend:
     internal: true
   edge:
+  ai:
+    internal: true
+  provider:

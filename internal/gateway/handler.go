@@ -1,5 +1,5 @@
-// Package gateway translates HTTP/JSON into gRPC calls. It has no repository or
-// database dependency. Decisions are a manual, DEMO-ONLY operation.
+// Package gateway translates procurement HTTP into gRPC and owns local identity routes.
+// Only its identity module accesses auth.*; procurement tables remain service-owned.
 package gateway
 
 import (
@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	pb "procureflow-ai/gen/procureflow/v1"
+	"procureflow-ai/internal/auth"
 	"procureflow-ai/internal/domain"
 
 	"google.golang.org/grpc"
@@ -32,13 +33,16 @@ type ApprovalClient interface {
 }
 
 type Handler struct {
-	purchases PurchaseClient
-	approvals ApprovalClient
-	timeout   time.Duration
-	maxBody   int64
-	origin    string
-	logger    *slog.Logger
-	mux       *http.ServeMux
+	accounts         *auth.Sessions
+	purchases        PurchaseClient
+	approvals        ApprovalClient
+	assistant        AssistantClient
+	assistantTimeout time.Duration
+	timeout          time.Duration
+	maxBody          int64
+	origin           string
+	logger           *slog.Logger
+	mux              *http.ServeMux
 }
 
 func NewHandler(purchases PurchaseClient, approvals ApprovalClient, timeout time.Duration, maxBody int64, origin string, logger *slog.Logger) *Handler {
@@ -47,9 +51,16 @@ func NewHandler(purchases PurchaseClient, approvals ApprovalClient, timeout time
 	}
 	h := &Handler{purchases: purchases, approvals: approvals, timeout: timeout, maxBody: maxBody, origin: origin, logger: logger, mux: http.NewServeMux()}
 	h.route("/healthz", map[string]http.HandlerFunc{http.MethodGet: h.health})
+	h.route("/api/auth/signup", map[string]http.HandlerFunc{http.MethodPost: h.signup})
+	h.route("/api/admin/users", map[string]http.HandlerFunc{http.MethodGet: h.listUsers})
+	h.route("/api/admin/users/{id}/role", map[string]http.HandlerFunc{http.MethodPost: h.changeRole})
+	h.route("/api/auth/login", map[string]http.HandlerFunc{http.MethodPost: h.login})
+	h.route("/api/auth/me", map[string]http.HandlerFunc{http.MethodGet: h.me})
+	h.route("/api/auth/logout", map[string]http.HandlerFunc{http.MethodPost: h.logout})
 	h.route("/api/purchases", map[string]http.HandlerFunc{http.MethodGet: h.list, http.MethodPost: h.create})
 	h.route("/api/purchases/{id}", map[string]http.HandlerFunc{http.MethodGet: h.get})
 	h.route("/api/purchases/{id}/decision", map[string]http.HandlerFunc{http.MethodPost: h.decide})
+	h.route("/api/assistant/ask", map[string]http.HandlerFunc{http.MethodPost: h.askPolicy})
 	h.mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, 404, "NOT_FOUND", "route not found", false)
 	})
@@ -95,12 +106,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Header.Get("Origin") != "" {
 		w.Header().Set("Access-Control-Allow-Origin", h.origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Expose-Headers", "Location")
 	}
 	// Reject noncanonical paths instead of ServeMux's HTML redirect response.
 	if path.Clean(r.URL.Path) != r.URL.Path {
 		writeError(out, 404, "NOT_FOUND", "route not found", false)
 		return
+	}
+	if r.Method != http.MethodOptions && strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/auth/login" && r.URL.Path != "/api/auth/signup" {
+		var ok bool
+		r, ok = h.authenticateRequest(out, r)
+		if !ok {
+			return
+		}
 	}
 	h.mux.ServeHTTP(out, r)
 }
@@ -120,13 +139,13 @@ func (h *Handler) route(pattern string, methods map[string]http.HandlerFunc) {
 				return
 			}
 			for _, header := range strings.Split(r.Header.Get("Access-Control-Request-Headers"), ",") {
-				if header = strings.TrimSpace(header); header != "" && !strings.EqualFold(header, "Content-Type") {
-					writeError(w, 403, "PREFLIGHT_DENIED", "only the Content-Type request header is allowed", false)
+				if header = strings.TrimSpace(header); header != "" && !strings.EqualFold(header, "Content-Type") && !strings.EqualFold(header, "X-CSRF-Token") {
+					writeError(w, 403, "PREFLIGHT_DENIED", "only Content-Type and X-CSRF-Token request headers are allowed", false)
 					return
 				}
 			}
 			w.Header().Set("Access-Control-Allow-Methods", strings.Join(allowed, ", "))
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -253,6 +272,11 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	if !validID(w, "client_request_id", in.ClientRequestID) || !validID(w, "employee_id", in.EmployeeID) {
 		return
 	}
+	actor, _ := auth.Identity(r.Context())
+	if in.EmployeeID != actor.Subject {
+		writeError(w, 403, "FORBIDDEN", "employee_id must match the signed-in account", false)
+		return
+	}
 	if strings.TrimSpace(in.ItemName) == "" || strings.ContainsRune(in.ItemName, '\x00') || utf8.RuneCountInString(in.ItemName) > 200 {
 		writeError(w, 400, "INVALID_ARGUMENT", "item_name must contain 1-200 characters and no NUL characters", false)
 		return
@@ -282,13 +306,18 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 }
 
 type decisionInput struct {
-	// DEMO-ONLY: supplied by the caller, not an authenticated identity.
+	// Optional compatibility field; if provided it must match authenticated identity.
 	ManagerID string `json:"manager_id"`
 	Decision  string `json:"decision"`
 	Comment   string `json:"comment"`
 }
 
 func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.Identity(r.Context())
+	if !auth.CanReview(actor.Role) {
+		writeError(w, 403, "FORBIDDEN", "manager role required", false)
+		return
+	}
 	id := r.PathValue("id")
 	if !validID(w, "purchase_id", id) {
 		return
@@ -297,7 +326,8 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !validID(w, "manager_id (DEMO-ONLY)", in.ManagerID) {
+	if in.ManagerID != "" && in.ManagerID != actor.Subject {
+		writeError(w, 403, "FORBIDDEN", "manager_id must match the signed-in account", false)
 		return
 	}
 	decision := pb.Status_STATUS_UNSPECIFIED
@@ -331,5 +361,5 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		Status            string `json:"status"`
 		DemoOnly          bool   `json:"demo_only"`
 		MetadataPersisted bool   `json:"metadata_persisted"`
-	}{a.PurchaseId, statusName(a.Status), true, false})
+	}{a.PurchaseId, statusName(a.Status), false, false})
 }

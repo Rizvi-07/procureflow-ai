@@ -3,6 +3,7 @@
 import { createApp, nextTick } from "vue";
 import { describe, expect, it, vi } from "vitest";
 import App from "../src/App.vue";
+import { readFileSync } from "node:fs";
 
 async function fill(root: HTMLElement, selector: string, value: string) {
   const input = root.querySelector<HTMLInputElement | HTMLTextAreaElement>(
@@ -23,6 +24,33 @@ describe.skipIf(process.env.RUN_LIVE_API_TESTS !== "1")(
         document.body.append(root);
         const originalFetch = globalThis.fetch;
         let listCalls = 0;
+        // Node fetch has no cookie jar. Emulate the browser cookie transport only;
+        // all identities, CSRF tokens and purchase responses come from the real API.
+        let cookie = "";
+        const credentials = JSON.parse(
+          readFileSync(
+            process.env.DEMO_CREDENTIALS_FILE ||
+              "../secrets/demo-credentials.json",
+            "utf8",
+          ),
+        ) as { username: string; password: string }[];
+        async function signIn(username: string) {
+          await vi.waitFor(() =>
+            expect(root.querySelector("#username")).not.toBeNull(),
+          );
+          const account = credentials.find((c) => c.username === username)!;
+          await fill(root, "#username", account.username);
+          await fill(root, "#password", account.password);
+          root
+            .querySelector("form")!
+            .dispatchEvent(
+              new Event("submit", { bubbles: true, cancelable: true }),
+            );
+          await vi.waitFor(
+            () => expect(root.querySelector(".count-badge")).not.toBeNull(),
+            { timeout: 8000 },
+          );
+        }
         vi.stubGlobal(
           "fetch",
           async (url: RequestInfo | URL, options?: RequestInit) => {
@@ -33,7 +61,13 @@ describe.skipIf(process.env.RUN_LIVE_API_TESTS !== "1")(
               listCalls++;
             const headers = new Headers(options?.headers);
             headers.set("Origin", "http://localhost:5173");
+            if (cookie) headers.set("Cookie", cookie);
             const response = await originalFetch(url, { ...options, headers });
+            const setCookie = response.headers.get("set-cookie");
+            if (setCookie) cookie = setCookie.split(";")[0];
+            expect(
+              response.headers.get("Access-Control-Allow-Credentials"),
+            ).toBe("true");
             expect(response.headers.get("Access-Control-Allow-Origin")).toBe(
               "http://localhost:5173",
             );
@@ -43,6 +77,7 @@ describe.skipIf(process.env.RUN_LIVE_API_TESTS !== "1")(
         const app = createApp(App);
         app.mount(root);
         try {
+          await signIn("employee.demo");
           await vi.waitFor(
             () => expect(root.querySelector(".count-badge")).not.toBeNull(),
             { timeout: 8000 },
@@ -55,7 +90,9 @@ describe.skipIf(process.env.RUN_LIVE_API_TESTS !== "1")(
           );
           expect(root.querySelector(".error-banner")).toBeNull();
           const item = `Phase 05 ${status.toLowerCase()} check ${crypto.randomUUID().slice(0, 8)}`;
-          await fill(root, "#employee-id", "emp-demo-505");
+          expect(
+            root.querySelector<HTMLInputElement>("#employee-id")!.readOnly,
+          ).toBe(true);
           await fill(root, "#item-name", item);
           await fill(root, "#quantity", "2");
           await fill(root, "#unit-price", "800.29");
@@ -73,6 +110,12 @@ describe.skipIf(process.env.RUN_LIVE_API_TESTS !== "1")(
           });
           expect(findRow()!.textContent).toContain("€1,600.58");
           expect(findRow()!.textContent).toContain("Not provided");
+          expect(findRow()!.querySelector(".review-button")).toBeNull();
+          root.querySelector<HTMLButtonElement>(".account-bar button")!.click();
+          await signIn("manager.demo");
+          await vi.waitFor(() => expect(findRow()).toBeDefined(), {
+            timeout: 8000,
+          });
           findRow()!
             .querySelector<HTMLButtonElement>(".review-button")!
             .click();

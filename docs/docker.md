@@ -1,5 +1,11 @@
 # Local Docker Compose deployment (Phase 06)
 
+Phase 08 adds an optional `assistant` profile with a separate pgvector database
+and read-only service, plus an explicit `policy-import` tool. It is disabled by
+default and does not change the commands or procurement storage below. See
+[policy-assistant.md](policy-assistant.md) before opting into billable provider
+calls. No assistant dependency gates the default stack.
+
 Run these PowerShell commands from the repository root with Docker Desktop
 running in **Linux containers** mode and Docker Compose v2 available. The stack
 builds the existing MVP; it requires no host Go, Node, PostgreSQL, AI credentials,
@@ -15,6 +21,11 @@ docker compose version
 # Optional: preserve any existing local configuration.
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
+# First time only. With host Go:
+go run ./cmd/auth-setup
+# Existing demo files: use go run ./cmd/auth-setup -admin-only instead.
+# Without Go, use the Docker-only setup in docs/authentication.md instead.
+# Skip setup on later runs: it refuses to overwrite existing credentials.
 docker compose config
 docker compose up -d --build
 docker compose ps
@@ -23,7 +34,7 @@ docker compose ps -a
 
 Open **http://localhost:5173/**. The browser calls **http://localhost:8080**.
 Use `localhost` for the frontend so its origin matches CORS. Five long-running
-containers should become healthy; `migrate` should show **Exited (0)** in
+containers should become healthy; `migrate` and `auth-seed` should show **Exited (0)** in
 `ps -a`. That exit is successful completion, not a failed server.
 
 Compose works without `.env` using the public **DEVELOPMENT-ONLY** values in
@@ -33,8 +44,8 @@ environment. Compose reads root `.env` automatically; native Go commands still
 require shell exports. Existing native `DATABASE_URL` and bind settings are not
 used by Compose. Its overrides use the separate `COMPOSE_` variables.
 
-This is a loopback-only demonstration with plaintext HTTP/gRPC and no real
-authentication. **`manager_id` is DEMO-ONLY.** CORS is not authorization. The
+This is a loopback-only demonstration with plaintext HTTP/gRPC and no transport
+TLS. Local password authentication, sessions and signed gRPC identities are enforced; see [authentication.md](authentication.md). CORS is not authorization. The
 shared local database role can access both schemas; service repository boundaries
 still enforce ownership in code. Separate least-privilege runtime roles and a
 migration role remain deployment hardening work.
@@ -77,7 +88,7 @@ occupies the chosen browser-facing ports.
 ## Startup, migrations, and images
 
 Startup follows PostgreSQL TCP readiness, then the one-shot migration command,
-then both gRPC health checks, then gateway HTTP health, then frontend HTTP health.
+then insert-only auth account bootstrap and both gRPC health checks, then gateway HTTP health, then frontend HTTP health.
 The migration's successful exit gates backend startup. The services have no
 mutual startup dependency even though they call one another at runtime.
 
@@ -98,8 +109,11 @@ The health checks prove process readiness, not cross-service synchronization or
 ongoing database availability. Existing timeout errors and identical retries
 still handle partial failures; see [architecture.md](architecture.md).
 
-The root multistage Dockerfile shares one Go builder and produces four runtime
-targets: purchase, approval, gateway, and migrations. A small Go `healthcheck`
+Bootstrap hashes under ignored `secrets/` are mounted read-only into auth-seed; only the signing key is mounted into the runtime gateway/services. Runtime users/roles live in auth.users and role changes are audited in auth.role_changes. They are not image layers or Compose environment secrets; missing files fail startup. The one-time `auth-setup` image writes them through a host mount and is not a long-running service.
+
+The root multistage Dockerfile shares one Go builder and produces five MVP runtime
+targets (purchase, approval, gateway, migrations, account seeding) plus two optional policy targets.
+A small Go `healthcheck`
 command probes the existing standard gRPC health protocol or HTTP `/healthz`
 with a deadline; it adds no business RPC. Runtime Go images are non-root with
 read-only filesystems and dropped capabilities. The frontend uses a Node builder
@@ -130,7 +144,7 @@ name. PostgreSQL 18 mounts it at `/var/lib/postgresql`, with versioned PGDATA
 beneath that path. Keep the project name and volume when restarting; a different
 project name selects different storage. Never remove volumes as part of routine
 shutdown. Changing the database user/password/name variables does not rewrite
-an already-initialized database; keep them stable for this demo.
+an already-initialized database; keep them stable for this demo. The auth-seed job runs after migrations and inserts only missing bootstrap users. It never resets existing passwords or roles; startup gates on successful completion.
 
 Compose storage is separate from any native Phase 03 cluster retained under
 ignored `tmp/`. Existing native data is neither imported nor removed. Do not
@@ -146,32 +160,34 @@ Compose project's UI/API and preserves its named volume.
 ```powershell
 $ErrorActionPreference = 'Stop'
 $base = 'http://localhost:8080'
-$body = @{
-    client_request_id = [guid]::NewGuid().ToString()
-    employee_id = 'emp-compose-demo'
-    item_name = 'Fictional demo laptop'
-    quantity = 2
-    unit_price_cents = 80000
-} | ConvertTo-Json
-$purchase = Invoke-RestMethod -Method Post -Uri "$base/api/purchases" -ContentType 'application/json' -Body $body
+$credentials = Get-Content secrets/demo-credentials.json -Raw | ConvertFrom-Json
+function Open-DemoSession([string]$Username) {
+    $account = $credentials | Where-Object username -eq $Username
+    $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    $login = Invoke-RestMethod -Uri "$base/api/auth/login" -Method Post -WebSession $session -ContentType application/json -Body (@{username=$account.username;password=$account.password}|ConvertTo-Json)
+    return @{WebSession=$session;Headers=@{'X-CSRF-Token'=$login.csrf_token};TimeoutSec=10}
+}
+$employeeHttp = Open-DemoSession 'employee.demo'
+$managerHttp = Open-DemoSession 'manager.demo'
+$body = @{client_request_id=[guid]::NewGuid().ToString();employee_id='emp-101';item_name='Fictional restart check';quantity=2;unit_price_cents=80000} | ConvertTo-Json
+$purchase = Invoke-RestMethod @employeeHttp -Method Post -Uri "$base/api/purchases" -ContentType application/json -Body $body
 $id = $purchase.id
-if ($purchase.status -ne 'PENDING' -or $purchase.total_cents -ne 160000) { throw 'Invalid purchase result' }
-$decision = @{ manager_id = 'manager-demo'; decision = 'APPROVED'; comment = 'Fictional local demo' } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "$base/api/purchases/$id/decision" -ContentType 'application/json' -Body $decision
-Invoke-RestMethod -Uri "$base/api/purchases/$id"
-Invoke-RestMethod -Uri "$base/api/purchases"
+$decision = @{manager_id='manager-demo';decision='APPROVED';comment='Fictional local demo'} | ConvertTo-Json
+Invoke-RestMethod @managerHttp -Method Post -Uri "$base/api/purchases/$id/decision" -ContentType application/json -Body $decision
 
 docker compose down
 if ($LASTEXITCODE -ne 0) { throw 'Compose shutdown failed' }
 docker compose up -d --wait
 if ($LASTEXITCODE -ne 0) { throw 'Compose startup failed' }
 
-$saved = Invoke-RestMethod -Uri "$base/api/purchases/$id"
+# Sessions are in memory: sign in again after the gateway restarts.
+$employeeHttp = Open-DemoSession 'employee.demo'
+$managerHttp = Open-DemoSession 'manager.demo'
+$saved = Invoke-RestMethod @employeeHttp -Uri "$base/api/purchases/$id"
 if ($saved.id -ne $id -or $saved.status -ne 'APPROVED' -or $saved.total_cents -ne 160000) { throw 'Persistence check failed' }
-$replayed = Invoke-RestMethod -Method Post -Uri "$base/api/purchases" -ContentType 'application/json' -Body $body
+$replayed = Invoke-RestMethod @employeeHttp -Method Post -Uri "$base/api/purchases" -ContentType application/json -Body $body
 if ($replayed.id -ne $id) { throw 'Idempotency check failed' }
-# Also retries propagation of the persisted approval decision:
-Invoke-RestMethod -Method Post -Uri "$base/api/purchases/$id/decision" -ContentType 'application/json' -Body $decision
+Invoke-RestMethod @managerHttp -Method Post -Uri "$base/api/purchases/$id/decision" -ContentType application/json -Body $decision
 "Persistence and idempotency verified for $id"
 ```
 

@@ -1,6 +1,6 @@
 import { createApp, nextTick, type App as VueApp } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App from "./App.vue";
+import App from "./ProcurementDashboard.vue";
 
 const { list, create, decide } = vi.hoisted(() => ({
   list: vi.fn(),
@@ -17,10 +17,17 @@ afterEach(() => {
   document.body.innerHTML = "";
   vi.resetAllMocks();
 });
-function mount() {
+function mount(role: "employee" | "manager" = "manager") {
   const root = document.createElement("div");
   document.body.append(root);
-  app = createApp(App);
+  app = createApp(App, {
+    user: {
+      id: "manager-demo",
+      username: "manager.demo",
+      name: "Demo Manager",
+      role,
+    },
+  });
   app.mount(root);
   return root;
 }
@@ -40,7 +47,7 @@ describe("dashboard states", () => {
     await vi.waitFor(() =>
       expect(root.textContent).toContain("Your next purchase starts here"),
     );
-    expect(root.textContent).toContain("Demo identity only");
+    expect(root.textContent).toContain("Local portfolio accounts");
     expect(root.querySelectorAll("tbody tr")).toHaveLength(0);
   });
   it("lists purchases, hides final actions, and refreshes actual data", async () => {
@@ -71,6 +78,28 @@ describe("dashboard states", () => {
     await nextTick();
     expect(root.querySelector("#decision-panel")).not.toBeNull();
   });
+  it.each(["employee", "manager"] as const)(
+    "hides review actions for %s on an owned request",
+    async (role) => {
+      list.mockResolvedValue([
+        {
+          id: "own",
+          client_request_id: "own-key",
+          employee_id: "manager-demo",
+          item_name: "Fictional own request",
+          quantity: 1,
+          unit_price_cents: 100,
+          total_cents: 100,
+          status: "PENDING",
+        },
+      ]);
+      const root = mount(role);
+      await vi.waitFor(() =>
+        expect(root.querySelectorAll("tbody tr")).toHaveLength(1),
+      );
+      expect(root.querySelector(".review-button")).toBeNull();
+    },
+  );
   it("shows request errors and recovers with refresh", async () => {
     list
       .mockRejectedValueOnce(new Error("Could not reach the API"))

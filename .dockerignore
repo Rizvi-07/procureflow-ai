@@ -4,6 +4,7 @@
 .claude
 .cursor
 .aws
+secrets
 **/AGENTS.md
 **/AGENTS.override.md
 **/CLAUDE.md

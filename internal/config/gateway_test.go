@@ -11,6 +11,7 @@ func gatewayEnv(t *testing.T) {
 		"PURCHASE_SERVICE_GRPC_TARGET": "localhost:50051", "APPROVAL_SERVICE_GRPC_TARGET": "localhost:50052",
 		"GRPC_CALL_TIMEOUT": "2s", "SHUTDOWN_TIMEOUT": "5s", "HTTP_READ_HEADER_TIMEOUT": "5s",
 		"HTTP_READ_TIMEOUT": "10s", "HTTP_WRITE_TIMEOUT": "15s", "HTTP_IDLE_TIMEOUT": "60s", "HTTP_MAX_BODY_BYTES": "65536",
+		"ASSISTANT_GRPC_TARGET": "", "ASSISTANT_CALL_TIMEOUT": "10s",
 	} {
 		t.Setenv(key, value)
 	}
@@ -18,7 +19,7 @@ func gatewayEnv(t *testing.T) {
 
 func TestGatewayConfig(t *testing.T) {
 	gatewayEnv(t)
-	// The gateway must never attempt to load a database URL or its credentials.
+	// HTTP config must ignore procurement DATABASE_URL. Identity uses AUTH_DATABASE_URL at startup.
 	t.Setenv("DATABASE_URL", "invalid-do-not-use")
 	c, err := LoadGateway()
 	if err != nil || c.Addr != "127.0.0.1:8080" || c.MaxBodyBytes != 65536 || c.VueOrigin != "http://localhost:5173" {
@@ -41,6 +42,7 @@ func TestInvalidGatewayConfig(t *testing.T) {
 		{"GRPC_CALL_TIMEOUT", "0s"}, {"HTTP_READ_TIMEOUT", "0s"}, {"HTTP_READ_HEADER_TIMEOUT", "20s"},
 		{"HTTP_WRITE_TIMEOUT", "1s"}, {"HTTP_IDLE_TIMEOUT", "-1s"}, {"SHUTDOWN_TIMEOUT", "bad"},
 		{"HTTP_MAX_BODY_BYTES", "0"}, {"HTTP_MAX_BODY_BYTES", "1048577"}, {"HTTP_MAX_BODY_BYTES", "bad"},
+		{"ASSISTANT_GRPC_TARGET", ":50053"}, {"ASSISTANT_CALL_TIMEOUT", "0s"},
 	} {
 		t.Run(tc.key+tc.value, func(t *testing.T) {
 			gatewayEnv(t)

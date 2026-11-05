@@ -9,7 +9,9 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"procureflow-ai/internal/auth"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +23,7 @@ import (
 )
 
 const createBody = `{"client_request_id":"demo-key","employee_id":"emp-101","item_name":"Laptop","quantity":2,"unit_price_cents":80000}`
-const decisionBody = `{"manager_id":"manager-demo","decision":"APPROVED","comment":"Within budget"}`
+const decisionBody = `{"manager_id":"emp-101","decision":"APPROVED","comment":"Within budget"}`
 const vueOrigin = "http://localhost:5173"
 
 type fakePurchases struct {
@@ -47,7 +49,22 @@ func (f fakeApprovals) DecideApproval(ctx context.Context, req *pb.DecideApprova
 }
 
 func testHandler(p fakePurchases, a fakeApprovals) *Handler {
-	return NewHandler(p, a, time.Second, 65536, vueOrigin, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	h := NewHandler(p, a, time.Second, 65536, vueOrigin, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	h.accounts = auth.NewSessions([]auth.Account{{User: auth.User{ID: "emp-101", Username: "fixture.manager", Name: "Fixture Manager", Role: auth.Manager}}}, false)
+	token, session, _ := h.accounts.Create(auth.User{ID: "emp-101", Username: "fixture.manager", Name: "Fixture Manager", Role: auth.Manager})
+	transportSessions.Store(h, struct{ token, csrf string }{token, session.CSRF})
+	return h
+}
+
+var transportSessions sync.Map
+
+func serveAuthenticated(h http.Handler, w http.ResponseWriter, r *http.Request) {
+	if fixture, ok := transportSessions.Load(h); ok {
+		session := fixture.(struct{ token, csrf string })
+		r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: session.token})
+		r.Header.Set("X-CSRF-Token", session.csrf)
+	}
+	h.ServeHTTP(w, r)
 }
 
 func request(h http.Handler, method, route, body string) *httptest.ResponseRecorder {
@@ -56,7 +73,7 @@ func request(h http.Handler, method, route, body string) *httptest.ResponseRecor
 		r.Header.Set("Content-Type", "application/json")
 	}
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
+	serveAuthenticated(h, w, r)
 	return w
 }
 
@@ -144,7 +161,7 @@ func TestRoutesAndJSONRepresentations(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	w = request(h, "POST", "/api/purchases/purchase-demo/decision", decisionBody)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"demo_only":true`) || !strings.Contains(w.Body.String(), `"metadata_persisted":false`) || !strings.Contains(w.Body.String(), `"status":"APPROVED"`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"demo_only":false`) || !strings.Contains(w.Body.String(), `"metadata_persisted":false`) || !strings.Contains(w.Body.String(), `"status":"APPROVED"`) {
 		t.Fatalf("decision=%d %s", w.Code, w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), "Within budget") {
@@ -196,7 +213,7 @@ func TestInvalidCreateNeverCallsGRPC(t *testing.T) {
 			r := httptest.NewRequest("POST", "/api/purchases", strings.NewReader(tc.body))
 			r.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
-			h.ServeHTTP(w, r)
+			serveAuthenticated(h, w, r)
 			wantError(t, w, 400, tc.code)
 		})
 	}
@@ -211,14 +228,14 @@ func TestJSONBodyLimitsAndMediaTypes(t *testing.T) {
 		r := httptest.NewRequest("POST", "/api/purchases", strings.NewReader(createBody))
 		r.Header.Set("Content-Type", contentType)
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
+		serveAuthenticated(h, w, r)
 		wantError(t, w, 415, "UNSUPPORTED_MEDIA_TYPE")
 	}
 	r := httptest.NewRequest("POST", "/api/purchases", strings.NewReader(createBody))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Content-Encoding", "gzip")
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, r)
+	serveAuthenticated(h, w, r)
 	wantError(t, w, 415, "UNSUPPORTED_MEDIA_TYPE")
 	// A zero price and the largest safe int64 quantity are accepted as integers.
 	h = testHandler(fakePurchases{create: func(_ context.Context, in *pb.CreatePurchaseRequest) (*pb.Purchase, error) {
@@ -227,7 +244,7 @@ func TestJSONBodyLimitsAndMediaTypes(t *testing.T) {
 		}
 		return &pb.Purchase{Id: "free-item"}, nil
 	}}, nil)
-	w = request(h, "POST", "/api/purchases", `{"client_request_id":"free","employee_id":"emp","item_name":"Gift","quantity":9223372036854775807,"unit_price_cents":0}`)
+	w = request(h, "POST", "/api/purchases", `{"client_request_id":"free","employee_id":"emp-101","item_name":"Gift","quantity":9223372036854775807,"unit_price_cents":0}`)
 	if w.Code != 201 {
 		t.Fatal(w.Body.String())
 	}
@@ -239,8 +256,7 @@ func TestInvalidDecisionsNeverCallGRPC(t *testing.T) {
 		return nil, nil
 	}))
 	for _, tc := range []struct{ name, body, code string }{
-		{"missing manager", `{"decision":"APPROVED"}`, "INVALID_ARGUMENT"},
-		{"bad manager", strings.Replace(decisionBody, `"manager-demo"`, `" "`, 1), "INVALID_ARGUMENT"},
+
 		{"pending", strings.Replace(decisionBody, "APPROVED", "PENDING", 1), "INVALID_ARGUMENT"},
 		{"lowercase", strings.Replace(decisionBody, "APPROVED", "approved", 1), "INVALID_ARGUMENT"},
 		{"unknown field", strings.TrimSuffix(decisionBody, "}") + `,"chatbot_approved":true}`, "INVALID_JSON"},
@@ -261,7 +277,7 @@ func TestRoutingAndCORS(t *testing.T) {
 			r := httptest.NewRequest("GET", "/healthz", nil)
 			r.Header.Set("Origin", origin)
 			w := httptest.NewRecorder()
-			h.ServeHTTP(w, r)
+			serveAuthenticated(h, w, r)
 			wantError(t, w, 403, "ORIGIN_DENIED")
 			if w.Header().Get("Access-Control-Allow-Origin") != "" {
 				t.Fatal("denied origin reflected")
@@ -271,13 +287,13 @@ func TestRoutingAndCORS(t *testing.T) {
 	r := httptest.NewRequest("GET", "/healthz", nil)
 	r.Header.Set("Origin", vueOrigin)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != 200 || w.Header().Get("Access-Control-Allow-Origin") != vueOrigin || w.Header().Get("Access-Control-Allow-Credentials") != "" {
+	serveAuthenticated(h, w, r)
+	if w.Code != 200 || w.Header().Get("Access-Control-Allow-Origin") != vueOrigin || w.Header().Get("Access-Control-Allow-Credentials") != "true" {
 		t.Fatal("CORS origin not restricted")
 	}
 	r.Header.Add("Origin", vueOrigin)
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, r)
+	serveAuthenticated(h, w, r)
 	wantError(t, w, 403, "ORIGIN_DENIED")
 	for _, tc := range []struct {
 		origin, method, headers string
@@ -293,11 +309,11 @@ func TestRoutingAndCORS(t *testing.T) {
 		r.Header.Set("Access-Control-Request-Method", tc.method)
 		r.Header.Set("Access-Control-Request-Headers", tc.headers)
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
+		serveAuthenticated(h, w, r)
 		if w.Code != tc.status {
 			t.Fatalf("preflight=%d %s", w.Code, w.Body.String())
 		}
-		if w.Code == 204 && (w.Body.Len() != 0 || w.Header().Get("Access-Control-Allow-Headers") != "Content-Type") {
+		if w.Code == 204 && (w.Body.Len() != 0 || w.Header().Get("Access-Control-Allow-Headers") != "Content-Type, X-CSRF-Token") {
 			t.Fatal("invalid preflight response")
 		}
 	}
@@ -357,7 +373,7 @@ func TestDeadlineCancellationAndMalformedPeer(t *testing.T) {
 	cancel()
 	r := httptest.NewRequest("GET", "/api/purchases/purchase-demo", nil).WithContext(ctx)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
+	serveAuthenticated(h, w, r)
 	wantError(t, w, 408, "CANCELED")
 	h = testHandler(fakePurchases{get: func(context.Context, *pb.GetPurchaseRequest) (*pb.Purchase, error) { return nil, nil }}, nil)
 	wantError(t, request(h, "GET", "/api/purchases/purchase-demo", ""), 502, "BAD_GATEWAY")

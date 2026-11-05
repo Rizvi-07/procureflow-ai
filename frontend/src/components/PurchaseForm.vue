@@ -11,9 +11,15 @@ import AppIcon from "./AppIcon.vue";
 
 const props = defineProps<{
   disabled: boolean;
+  employeeId?: string;
   submitRequest: (input: CreatePurchase) => Promise<Purchase>;
 }>();
-const fields = reactive({ employee: "", item: "", quantity: "1", price: "" });
+const fields = reactive({
+  employee: props.employeeId ?? "",
+  item: "",
+  quantity: "1",
+  price: "",
+});
 const errors = reactive<Record<string, string>>({});
 const requestError = ref("");
 const notice = ref("");
@@ -132,7 +138,7 @@ function editNew() {
             autocomplete="off"
             maxlength="128"
             required
-            :readonly="!!attempt"
+            :readonly="!!attempt || !!employeeId"
             :aria-invalid="!!errors.employee"
             :aria-describedby="errors.employee ? 'employee-error' : undefined"
           />

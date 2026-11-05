@@ -7,10 +7,11 @@ import AppIcon from "./AppIcon.vue";
 const props = defineProps<{
   purchase: Purchase;
   disabled: boolean;
+  managerId?: string;
   submitDecision: (id: string, input: DecisionInput) => Promise<void>;
 }>();
 const emit = defineEmits<{ close: []; done: [] }>();
-const manager = ref("manager-demo");
+const manager = ref(props.managerId ?? "manager-demo");
 const comment = ref("");
 const error = ref("");
 const working = ref<Decision | null>(null);
@@ -86,17 +87,19 @@ async function decide(decision: Decision) {
       ><span class="mono">{{ purchase.id }}</span>
     </div>
     <p class="field-hint demo-label">
-      Demo identity only. Manager ID and comment are not verified or retained.
+      Your signed-in manager identity is verified. Manager ID and comment are
+      not retained as an audit record.
     </p>
     <form novalidate @submit.prevent>
       <fieldset :disabled="disabled || !!working">
         <legend class="sr-only">Manual manager decision</legend>
         <div class="field">
-          <label for="manager-id">Demo manager ID</label
+          <label for="manager-id">Manager ID</label
           ><input
             id="manager-id"
             ref="managerInput"
             v-model="manager"
+            :readonly="!!managerId"
             name="manager_id"
             required
             maxlength="128"

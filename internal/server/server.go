@@ -13,8 +13,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func New(logger *slog.Logger, serviceName string, register func(*grpc.Server)) *grpc.Server {
-	s := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+func New(logger *slog.Logger, serviceName string, register func(*grpc.Server), options ...grpc.ServerOption) *grpc.Server {
+	logging := grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		start := time.Now()
 		response, err := handler(ctx, req)
 		level := slog.LevelInfo
@@ -23,7 +23,8 @@ func New(logger *slog.Logger, serviceName string, register func(*grpc.Server)) *
 		}
 		logger.Log(ctx, level, "rpc completed", "method", info.FullMethod, "code", status.Code(err).String(), "duration", time.Since(start))
 		return response, err
-	}))
+	})
+	s := grpc.NewServer(append(options, logging)...)
 	register(s)
 	h := health.NewServer()
 	healthpb.RegisterHealthServer(s, h)

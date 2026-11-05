@@ -1,5 +1,16 @@
 export type PurchaseStatus = "PENDING" | "APPROVED" | "REJECTED";
 export type Decision = Exclude<PurchaseStatus, "PENDING">;
+export interface User {
+  id: string;
+  username: string;
+  name: string;
+  role: "employee" | "manager" | "admin";
+}
+export interface AuthSession {
+  user: User;
+  csrf_token: string;
+  expires_at: string;
+}
 
 export interface Purchase {
   id: string;
@@ -28,10 +39,21 @@ export interface DecisionInput {
   comment: string;
 }
 
+export interface PolicyAnswer {
+  configured: boolean;
+  answer: string;
+  sources: {
+    document: string;
+    section: string;
+    chunk_index: number;
+    quote: string;
+  }[];
+}
+
 interface DecisionResult {
   purchase_id: string;
   status: Decision;
-  demo_only: true;
+  demo_only: false;
   metadata_persisted: false;
 }
 
@@ -95,7 +117,46 @@ function readPurchase(value: unknown): Purchase {
   };
 }
 
+function readUser(value: unknown): User {
+  if (
+    !object(value) ||
+    !["id", "username", "name"].every(
+      (key) => typeof value[key] === "string",
+    ) ||
+    !["employee", "manager", "admin"].includes(String(value.role))
+  )
+    throw new ApiError(
+      "The API returned an invalid user.",
+      "INVALID_RESPONSE",
+      false,
+    );
+  return value as unknown as User;
+}
+
 export function createApiClient(baseUrl: string, timeoutMs = 12000) {
+  let csrf = "";
+  function session(value: unknown): AuthSession {
+    if (
+      !object(value) ||
+      !object(value.user) ||
+      !["id", "username", "name"].every(
+        (key) =>
+          typeof (value.user as Record<string, unknown>)[key] === "string",
+      ) ||
+      !["employee", "manager", "admin"].includes(String(value.user.role)) ||
+      typeof value.csrf_token !== "string" ||
+      !value.csrf_token ||
+      typeof value.expires_at !== "string" ||
+      !Number.isFinite(Date.parse(value.expires_at))
+    )
+      throw new ApiError(
+        "The API returned an invalid session.",
+        "INVALID_RESPONSE",
+        false,
+      );
+    csrf = value.csrf_token;
+    return value as unknown as AuthSession;
+  }
   async function request(path: string, body?: unknown): Promise<unknown> {
     let base: URL;
     try {
@@ -128,14 +189,20 @@ export function createApiClient(baseUrl: string, timeoutMs = 12000) {
               : {
                   Accept: "application/json",
                   "Content-Type": "application/json",
+                  ...(csrf ? { "X-CSRF-Token": csrf } : {}),
                 },
-          credentials: "omit",
+          credentials: "include",
           signal: controller.signal,
           body: body === undefined ? undefined : JSON.stringify(body),
         },
       );
       const data: unknown = await response.json().catch(() => null);
       if (!response.ok) {
+        if (response.status === 401 && path !== "/api/auth/login") {
+          csrf = "";
+          if (typeof window !== "undefined")
+            window.dispatchEvent(new Event("session-expired"));
+        }
         if (
           object(data) &&
           object(data.error) &&
@@ -181,6 +248,74 @@ export function createApiClient(baseUrl: string, timeoutMs = 12000) {
   }
 
   return {
+    async signup(
+      username: string,
+      name: string,
+      password: string,
+    ): Promise<User> {
+      const data = await request("/api/auth/signup", {
+        username,
+        name,
+        password,
+      });
+      if (!object(data))
+        throw new ApiError(
+          "Invalid signup response.",
+          "INVALID_RESPONSE",
+          false,
+        );
+      return readUser(data.user);
+    },
+    async adminUsers(): Promise<User[]> {
+      const data = await request("/api/admin/users");
+      if (!object(data) || !Array.isArray(data.users))
+        throw new ApiError("Invalid user list.", "INVALID_RESPONSE", false);
+      return data.users.map(readUser);
+    },
+    async setRole(id: string, role: User["role"]): Promise<User> {
+      const data = await request(
+        `/api/admin/users/${encodeURIComponent(id)}/role`,
+        { role },
+      );
+      if (!object(data))
+        throw new ApiError("Invalid role response.", "INVALID_RESPONSE", false);
+      return readUser(data.user);
+    },
+    async login(username: string, password: string) {
+      return session(await request("/api/auth/login", { username, password }));
+    },
+    async me() {
+      return session(await request("/api/auth/me"));
+    },
+    async logout() {
+      await request("/api/auth/logout", {});
+      csrf = "";
+    },
+    async askPolicy(question: string): Promise<PolicyAnswer> {
+      const data = await request("/api/assistant/ask", { question });
+      if (
+        !object(data) ||
+        typeof data.configured !== "boolean" ||
+        typeof data.answer !== "string" ||
+        !Array.isArray(data.sources) ||
+        !data.sources.every(
+          (source) =>
+            object(source) &&
+            typeof source.document === "string" &&
+            typeof source.section === "string" &&
+            typeof source.quote === "string" &&
+            Number.isSafeInteger(source.chunk_index) &&
+            Number(source.chunk_index) >= 0,
+        )
+      ) {
+        throw new ApiError(
+          "The API returned an invalid policy answer.",
+          "INVALID_RESPONSE",
+          false,
+        );
+      }
+      return data as unknown as PolicyAnswer;
+    },
     async list(): Promise<Purchase[]> {
       const data = await request("/api/purchases");
       if (!object(data) || !Array.isArray(data.purchases))
@@ -203,7 +338,7 @@ export function createApiClient(baseUrl: string, timeoutMs = 12000) {
         !object(data) ||
         data.purchase_id !== id ||
         data.status !== input.decision ||
-        data.demo_only !== true ||
+        data.demo_only !== false ||
         data.metadata_persisted !== false
       )
         throw new ApiError(
@@ -217,6 +352,6 @@ export function createApiClient(baseUrl: string, timeoutMs = 12000) {
 }
 
 export const api = createApiClient(
-  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8080",
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:8080",
 );
 export type PurchaseApi = ReturnType<typeof createApiClient>;

@@ -11,6 +11,7 @@ import (
 
 	pb "procureflow-ai/gen/procureflow/v1"
 	"procureflow-ai/internal/approval"
+	"procureflow-ai/internal/auth"
 	"procureflow-ai/internal/config"
 	"procureflow-ai/internal/postgres"
 	"procureflow-ai/internal/purchase"
@@ -18,6 +19,7 @@ import (
 	"procureflow-ai/internal/server"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func Main(name string) {
@@ -32,6 +34,10 @@ func Main(name string) {
 
 func run(ctx context.Context, name string, logger *slog.Logger) error {
 	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	key, err := auth.LoadServiceKey()
 	if err != nil {
 		return err
 	}
@@ -52,7 +58,7 @@ func run(ctx context.Context, name string, logger *slog.Logger) error {
 	if name == "approval-service" {
 		addr, target = cfg.ApprovalAddr, cfg.PurchaseTarget
 	}
-	conn, err := rpc.Dial(target)
+	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithUnaryInterceptor(auth.ServiceClient(key, name)))
 	if err != nil {
 		return fmt.Errorf("create peer client: %w", err)
 	}
@@ -63,12 +69,12 @@ func run(ctx context.Context, name string, logger *slog.Logger) error {
 		svc := purchase.NewService(purchaseRepo, rpc.ApprovalClient{Client: pb.NewApprovalServiceClient(conn)}, cfg.RPCTimeout)
 		s = server.New(logger, pb.PurchaseService_ServiceDesc.ServiceName, func(s *grpc.Server) {
 			pb.RegisterPurchaseServiceServer(s, &rpc.PurchaseHandler{Service: svc})
-		})
+		}, grpc.ChainUnaryInterceptor(auth.ServerInterceptor(key)))
 	case "approval-service":
 		svc := approval.NewService(approvalRepo, rpc.PurchaseClient{Client: pb.NewPurchaseServiceClient(conn)}, cfg.RPCTimeout)
 		s = server.New(logger, pb.ApprovalService_ServiceDesc.ServiceName, func(s *grpc.Server) {
-			pb.RegisterApprovalServiceServer(s, &rpc.ApprovalHandler{Service: svc})
-		})
+			pb.RegisterApprovalServiceServer(s, &rpc.ApprovalHandler{Service: svc, Owners: pb.NewPurchaseServiceClient(conn)})
+		}, grpc.ChainUnaryInterceptor(auth.ServerInterceptor(key)))
 	default:
 		return fmt.Errorf("unknown service %q", name)
 	}

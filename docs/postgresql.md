@@ -113,8 +113,18 @@ go vet ./...
 go build ./...
 ```
 
-Four database tests verify persistence/idempotency after reconnect, migration reruns and SQL constraints, concurrent creates/decisions plus lock deadlines, and repairing a saved decision after a restart. Tests SKIP with an explicit `PostgreSQL integration NOT RUN` reason if the URL is unset, the server cannot be reached/authenticated, or the role lacks CREATEDB. Invalid URL syntax, migration failures, and failed assertions are failures, not skips. Use verbose output to distinguish them; a package-level PASS can include skipped database tests.
+Six database tests verify persistence/idempotency after reconnect, migration reruns and SQL constraints, concurrent creates/decisions plus lock deadlines, and repairing a saved decision after a restart, SQL user signup/password/role persistence and session revocation, and concurrent last-admin demotions with role audit rows. Tests SKIP with an explicit `PostgreSQL integration NOT RUN` reason if the URL is unset, the server cannot be reached/authenticated, or the role lacks CREATEDB. Invalid URL syntax, migration failures, and failed assertions are failures, not skips. Use verbose output to distinguish them; a package-level PASS can include skipped database tests.
 
 The existing unit and loopback gRPC tests continue to use memory and run without a database.
 
 Reference: [pgxpool documentation](https://pkg.go.dev/github.com/jackc/pgx/v5/pgxpool), [PostgreSQL constraints](https://www.postgresql.org/docs/current/ddl-constraints.html).
+
+## Identity schema
+
+003_auth.sql adds gateway-owned auth.users and auth.role_changes. The gateway
+uses AUTH_DATABASE_URL and queries only auth.*. Purchase/Approval Services keep
+DATABASE_URL and their existing schema ownership. Use auth-seed after migrations
+to preserve legacy account IDs/password hashes and provision the initial admin;
+see [authentication.md](authentication.md). No cross-schema joins or foreign
+keys connect users to procurement data. The shared local Compose SQL role is a
+demo convenience; separate least-privilege runtime roles remain deployment work.

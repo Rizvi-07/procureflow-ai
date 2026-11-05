@@ -1,23 +1,61 @@
 # ProcureFlow AI architecture
 
-## Current implementation: Phase 06
+## Current implementation: procurement MVP, optional RAG and local authentication
 
-The Vue 3 frontend calls a browser-facing Go REST/JSON gateway, which calls two Go services over gRPC. Each service depends on a context-aware repository interface. Without `DATABASE_URL`, it uses memory; with that variable set, it uses pgxpool and its own PostgreSQL schema. All three backend executables belong to one root Go module. The gateway and browser have no database dependency. Domain logic lives in `internal/purchase` and `internal/approval`; `cmd/` contains small entry points. Phase 06 adds local Compose deployment without changing REST or Protocol Buffer contracts.
+The Vue 3 frontend calls a browser-facing Go REST/JSON gateway, which calls two Go services over gRPC. Each service depends on a context-aware repository interface. Without `DATABASE_URL`, it uses memory; with that variable set, it uses pgxpool and its own PostgreSQL schema. All three backend executables belong to one root Go module. The browser has no database dependency. The gateway identity module connects only to auth.* using AUTH_DATABASE_URL; purchase/approval data is accessed only through gRPC. Domain logic lives in `internal/purchase` and `internal/approval`; `cmd/` contains small entry points. Phase 06 adds local Compose deployment without changing REST or Protocol Buffer contracts.
 
 ```mermaid
 flowchart LR
     Client[Go smoke client] -->|Create / Get / List| Purchase[Purchase gRPC service :50051]
-    Browser[Vue 3 + TypeScript frontend :5173] -->|REST / JSON| Gateway[Go API gateway :8080]
-    Gateway -->|Create / Get / List over gRPC| Purchase
-    Gateway -->|DecideApproval over gRPC| Approval
+    Browser[Vue 3 + TypeScript frontend :5173] -->|Session cookie + CSRF / REST JSON| Gateway[Go API gateway :8080]
+    Gateway -->|Signed actor / Create Get List| Purchase
+    Gateway -->|Signed manager or admin / DecideApproval| Approval
+    Gateway -->|identity ownership only| Users[(auth.users and auth.role_changes)]
     Client -->|Decide / Get / List| Approval[Approval gRPC service :50052]
     Purchase -->|CreateApproval with deadline| Approval
-    Approval -->|SetApprovalStatus with deadline| Purchase
+    Approval -->|Signed service / Get owner + SetApprovalStatus| Purchase
     Purchase -->|owned schema only| PurchaseStore[(purchase.requests)]
     Approval -->|owned schema only| ApprovalStore[(approval.decisions)]
 ```
 
-The two schemas share one PostgreSQL instance in Compose. There are no cross-schema queries or foreign keys between service data. Authentication and policy RAG remain future work. The original `services/` and `api-gateway/` directories remain reserved; current backend code is under `cmd/` and `internal/`.
+The procurement schemas and separately owned auth schema share one PostgreSQL instance in Compose. There are no cross-schema queries or foreign keys between service data. The optional Phase 08 assistant uses a separate AI database and does not change procurement contracts. Local authentication and role enforcement are implemented; see [authentication.md](authentication.md). The original `services/` and `api-gateway/` directories remain reserved; current backend code is under `cmd/` and `internal/`.
+
+## Identity ownership and role assignment
+
+Public signup creates employee accounts only; IDs come from the server. Admins
+can list users and assign employee, manager or admin through dedicated protected
+HTTP routes. Admins inherit manager purchase permissions, including the ban on
+self-review. Gateway startup requires migrated, seeded auth storage; there is no
+file fallback. Legacy account IDs/hashes are imported once without rewriting
+orders, passwords or existing SQL roles.
+
+A Users interface separates context-aware SQL queries from session/HTTP code.
+Role changes recheck the actor's admin role in a transaction, serialize with an
+advisory lock, protect the last admin, increment a session version, and insert a
+role-change audit row atomically. Every authenticated HTTP request reloads the
+current version/role; changed sessions are rejected, and database failure fails
+closed. Sessions remain in gateway memory and expire on restart. Private signed
+gRPC claims last 60 seconds; already-issued claims can remain valid until expiry.
+See [authentication.md](authentication.md) for bootstrap and operational limits.
+
+## Optional read-only RAG boundary
+
+```mermaid
+flowchart LR
+    Panel[Optional Vue policy panel] -->|POST /api/assistant/ask| Gateway[Existing gateway]
+    Gateway -->|assistant.v1 AnswerPolicy only| Assistant[Optional assistant gRPC service]
+    Assistant -->|read-only cosine search| AI[(Separate ai.policy_chunks pgvector database)]
+    Policies[Fictional policies/*.md] --> Import[Explicit policy-import command]
+    Import -->|migrate and upsert only ai.*| AI
+    Import -->|bounded embeddings| Provider[Configured OpenAI API]
+    Assistant -->|question embedding and retrieved text only| Provider
+```
+
+Default Compose startup does not start the `assistant` profile. An empty gateway assistant target or missing service credentials/models returns an explicit Not configured result. An unavailable assistant affects only its own HTTP route and never gates procurement startup. No assistant RPC, client, tool, or query can create/approve purchases or retrieve live order data. Future live order lookup needs a separate authenticated design.
+
+The import command applies its own `migrations/assistant/` schema and atomically publishes bounded Markdown chunks with model/dimension metadata. Runtime connections enforce read-only transactions. Questions use the same embedding model/dimension, cosine-distance-filtered top-K retrieval, and only those chunks as LLM evidence. Empty evidence skips generation. Returned citations must identify retrieved source IDs and exact quote substrings; document/section/chunk references come from the service. Fixed instructions treat documents/questions as untrusted and prohibit tools/actions. These controls reduce injection risk but do not guarantee semantic correctness of every generated claim.
+
+The AI database has a separate private network and named volume; provider egress is separate from the procurement backend. The gateway/browser receive no provider secrets or AI database handles. Fake-provider tests exercise real pgvector SQL, gRPC, and source-file provenance; **live OpenAI integration remains unverified without credentials/models**. See [policy-assistant.md](policy-assistant.md) for opt-in commands, privacy, costs, bounds, and verification.
 
 ## Local container deployment
 
@@ -36,7 +74,7 @@ flowchart TD
     DB --> Volume[Named postgres_data volume]
 ```
 
-The internal backend network and unpublished ports keep gRPC/PostgreSQL off host interfaces. The frontend has no backend-network membership; the gateway has no database URL. Startup waits for PostgreSQL TCP readiness, successful migrations, and gRPC health before starting the gateway, then HTTP health before starting the frontend. Migrations rerun safely through their existing ledger. Go's small container health command uses the standard gRPC health RPC with a deadline rather than invoking business operations. Health is process readiness, not a guarantee that every dependency remains available.
+The internal backend network and unpublished ports keep gRPC/PostgreSQL off host interfaces. The frontend has no backend-network membership; the gateway has only AUTH_DATABASE_URL and queries only auth.*. Startup waits for PostgreSQL TCP readiness, successful migrations, insert-only account bootstrap, and gRPC health before starting the gateway, then HTTP health before starting the frontend. Migrations rerun safely through their existing ledger. Go's small container health command uses the standard gRPC health RPC with a deadline rather than invoking business operations. Health is process readiness, not a guarantee that every dependency remains available.
 
 Go binaries run as a non-root user in small read-only runtime images; the frontend has a separate Node build and unprivileged Nginx runtime. A named volume retains PostgreSQL data when containers are recreated. Public DEVELOPMENT-ONLY credentials come from Compose defaults or ignored `.env`; optional AI configuration is absent. This deployment does not import or delete native database storage. See [docker.md](docker.md) for startup, address differences, and a persistence check.
 
@@ -44,11 +82,11 @@ Go binaries run as a non-root user in small read-only runtime images; the fronte
 
 `frontend/` is a Vite application using Vue's Composition API and TypeScript. `src/lib/api.ts` is the small typed REST client, `src/composables/usePurchases.ts` owns reactive page state, and components provide the request form, status badges, and manual manager review. There is no third-party state-management or UI library. API responses, not sample records, supply all table rows and summary totals.
 
-Decimal EUR input is parsed as text into BigInt cents before being checked against JavaScript's safe-integer range and converted to JSON integer numbers. Multiplication and aggregate formatting avoid floating-point rounding. Unsafe API numbers are rejected visibly rather than silently displayed. The frontend stores no credentials and omits browser credentials on fetch requests. `VITE_API_BASE_URL` is public build configuration.
+Decimal EUR input is parsed as text into BigInt cents before being checked against JavaScript's safe-integer range and converted to JSON integer numbers. Multiplication and aggregate formatting avoid floating-point rounding. Unsafe API numbers are rejected visibly rather than silently displayed. The frontend sends an HttpOnly session cookie through credentialed fetch and keeps the CSRF token only in memory. It never stores passwords or bearer tokens in localStorage. `VITE_API_BASE_URL` is public build configuration.
 
 An uncertain create keeps its original idempotency key and payload for identical retries. Decision status changes are applied only after the real gateway confirms success. Refresh replaces the list with fresh API data, and failed refreshes preserve prior rows with a visible stale-data message. Native labels, keyboard focus handling, live notices, text status badges, reduced-motion styles, and a horizontally scrollable semantic table support accessibility.
 
-The current REST purchase response has no creation timestamp, even though PostgreSQL stores one internally. The submitted-date column therefore shows `Not provided`. This phase does not invent dates or change contracts to expose them. Manager IDs/comments are clearly marked as demo-only, are not authenticated, and are not persisted. Frontend tests cover exact cents, API errors, retry identity, form behavior, and dashboard states; opt-in live tests exercise the actual Vue forms against the gateway.
+The current REST purchase response has no creation timestamp, even though PostgreSQL stores one internally. The submitted-date column therefore shows `Not provided`. This phase does not invent dates or change contracts to expose them. Signed-in employee/manager IDs are read-only in forms. Identity is authenticated; manager IDs/comments are not persisted as audit metadata. Frontend tests cover exact cents, API errors, retry identity, form behavior, and dashboard states; opt-in live tests exercise the actual Vue forms against the gateway.
 
 ## Boundaries and Go packages
 
@@ -56,7 +94,8 @@ The current REST purchase response has no creation timestamp, even though Postgr
 - `internal/approval` owns approval records and decisions, keyed by purchase ID.
 - `internal/domain` defines shared status values, validation helpers, and sentinel errors. It has no gRPC dependency.
 - `internal/rpc` translates generated messages into domain inputs and maps domain errors into gRPC status codes. Client adapters implement the small interfaces consumed by the services.
-- `internal/gateway` exposes five HTTP routes using `net/http`, validates JSON, applies CORS/body limits, maps transport errors, and calls generated gRPC clients. It does not access repositories or tables.
+- `internal/gateway` exposes five procurement routes plus the optional policy route using `net/http`, validates JSON, applies CORS/body limits, maps transport errors, and calls generated gRPC clients. It accesses only the identity repository (auth.*); procurement tables remain behind their gRPC services.
+- `internal/auth` owns PostgreSQL users, employee-only signup, transactional admin role changes with audit/versioning, bounded in-memory sessions/login throttling, and signed gRPC identity interceptors. No protobuf fields are added for identity.
 - `internal/config` reads environment variables and rejects invalid addresses or durations.
 - `internal/postgres` manages connection pools and sanitizes database errors; it does not access service tables.
 - `migrations/` contains embedded SQL and the migration runner; only `cmd/migrate` performs schema changes.
@@ -78,7 +117,7 @@ An identical create retry uses the same purchase ID and calls the idempotent app
 
 ## Approval decisions and synchronization
 
-The HTTP decision endpoint is manual and **DEMO-ONLY**. Its caller-supplied `manager_id` is not authenticated. Manager ID/comment are validated but cannot be persisted by the existing status-only RPC; the HTTP response explicitly reports `metadata_persisted: false`. There is no chatbot or AI approval integration.
+The HTTP decision endpoint requires a manager or admin session and CSRF token. Supplied `manager_id` must match the session; the Approval Service checks ownership over gRPC and forbids self-review. Manager ID/comment are not persisted by the existing status-only RPC; the response reports `metadata_persisted: false` and `demo_only: false`. There is no chatbot approval integration.
 
 Only PENDING -> APPROVED or PENDING -> REJECTED is allowed. Repeating the same terminal decision is safe; switching to the other terminal decision returns `FailedPrecondition`.
 
@@ -100,7 +139,7 @@ Both servers expose the standard gRPC health service. Health indicates that the 
 
 ## Intentional limitations
 
-PostgreSQL mode preserves data and idempotency keys across restarts. It still requires the caller to retry failed cross-service synchronization: a durable APPROVED decision may coexist with a PENDING purchase until the identical decision is retried. There is no outbox or background repair worker. Memory mode remains ephemeral. Lists return all records with no pagination. `CreateApproval` validates ID syntax (a UUID in PostgreSQL mode) but does not verify purchase existence; its intended caller is the purchase service. There is no authorization around internal status operations.
+PostgreSQL mode preserves data and idempotency keys across restarts. It still requires the caller to retry failed cross-service synchronization: a durable APPROVED decision may coexist with a PENDING purchase until the identical decision is retried. There is no outbox or background repair worker. Memory mode remains ephemeral. Managers and admins can list all records; employee lists are restricted to their own records. No pagination is implemented. `CreateApproval` validates ID syntax (a UUID in PostgreSQL mode) but does not verify purchase existence; its only authorized caller is the purchase service. Signed service identities restrict internal approval creation and purchase status updates; actor identities cannot invoke those RPCs.
 
 Transport is plaintext for local development. New service processes default to `127.0.0.1:50051` and `127.0.0.1:50052`. Only the gateway exposes browser REST/JSON at `127.0.0.1:8080`, with CORS limited to the configured local Vue origin. CORS does not provide authentication. Schema ownership is enforced by repository query boundaries; production deployment should also grant separate runtime database roles access only to their own schemas.
 

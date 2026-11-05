@@ -13,6 +13,8 @@ type GatewayConfig struct {
 	Addr              string
 	PurchaseTarget    string
 	ApprovalTarget    string
+	AssistantTarget   string
+	AssistantTimeout  time.Duration
 	VueOrigin         string
 	RPCTimeout        time.Duration
 	ReadHeaderTimeout time.Duration
@@ -25,10 +27,11 @@ type GatewayConfig struct {
 
 func LoadGateway() (GatewayConfig, error) {
 	c := GatewayConfig{
-		Addr:           env("API_GATEWAY_HTTP_ADDR", "127.0.0.1:8080"),
-		PurchaseTarget: env("PURCHASE_SERVICE_GRPC_TARGET", "localhost:50051"),
-		ApprovalTarget: env("APPROVAL_SERVICE_GRPC_TARGET", "localhost:50052"),
-		VueOrigin:      env("VUE_ORIGIN", "http://localhost:5173"),
+		Addr:            env("API_GATEWAY_HTTP_ADDR", "127.0.0.1:8080"),
+		PurchaseTarget:  env("PURCHASE_SERVICE_GRPC_TARGET", "localhost:50051"),
+		ApprovalTarget:  env("APPROVAL_SERVICE_GRPC_TARGET", "localhost:50052"),
+		AssistantTarget: env("ASSISTANT_GRPC_TARGET", ""),
+		VueOrigin:       env("VUE_ORIGIN", "http://localhost:5173"),
 	}
 	for _, entry := range []struct {
 		key, value string
@@ -50,11 +53,19 @@ func LoadGateway() (GatewayConfig, error) {
 	if !localOrigin(c.VueOrigin) {
 		return GatewayConfig{}, fmt.Errorf("VUE_ORIGIN must be an exact http(s) loopback origin without a path, credentials, query, or fragment")
 	}
+	if c.AssistantTarget != "" {
+		host, port, err := net.SplitHostPort(c.AssistantTarget)
+		n, portErr := strconv.Atoi(port)
+		if err != nil || portErr != nil || host == "" || n < 1 || n > 65535 {
+			return GatewayConfig{}, fmt.Errorf("ASSISTANT_GRPC_TARGET must be host:port")
+		}
+	}
 	for _, entry := range []struct {
 		key, fallback string
 		dst           *time.Duration
 	}{
 		{"GRPC_CALL_TIMEOUT", "2s", &c.RPCTimeout},
+		{"ASSISTANT_CALL_TIMEOUT", "10s", &c.AssistantTimeout},
 		{"HTTP_READ_HEADER_TIMEOUT", "5s", &c.ReadHeaderTimeout},
 		{"HTTP_READ_TIMEOUT", "10s", &c.ReadTimeout},
 		{"HTTP_WRITE_TIMEOUT", "15s", &c.WriteTimeout},
@@ -72,6 +83,9 @@ func LoadGateway() (GatewayConfig, error) {
 	}
 	if c.WriteTimeout <= c.RPCTimeout {
 		return GatewayConfig{}, fmt.Errorf("HTTP_WRITE_TIMEOUT must exceed GRPC_CALL_TIMEOUT")
+	}
+	if c.AssistantTarget != "" && c.WriteTimeout <= c.AssistantTimeout {
+		return GatewayConfig{}, fmt.Errorf("HTTP_WRITE_TIMEOUT must exceed ASSISTANT_CALL_TIMEOUT")
 	}
 	var err error
 	c.MaxBodyBytes, err = strconv.ParseInt(env("HTTP_MAX_BODY_BYTES", "65536"), 10, 64)
