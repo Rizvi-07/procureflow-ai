@@ -1,185 +1,159 @@
 # ProcureFlow AI
 
-ProcureFlow AI is an interview-ready portfolio project for an intelligent procurement management platform. It will let employees submit purchase requests, help reviewers manage approvals, and answer procurement policy questions using fictional documents.
+A fullstack procurement portfolio application built with **Go, Vue 3, TypeScript and PostgreSQL**. Employees submit purchase requests, managers review approvals, and admins manage user roles. A separate, optional policy assistant answers questions from fictional procurement documents.
 
-The project is built in small, independently testable milestones, with maintainable code and explanations of important Go and gRPC concepts.
+The project demonstrates REST and gRPC interfaces, service-owned data, retry-safe workflows, authentication, automated checks, and local container deployment. All records and policies are fictional demo content.
 
-## Current status
+## Implemented features
 
-**Phase 08: optional read-only policy RAG.** The procurement MVP remains independent of AI credentials and models. An opt-in gRPC assistant, gateway endpoint, and collapsed Vue panel answer fictional policy questions through a separate pgvector index and configured OpenAI provider. **Live provider integration is unverified:** tests use fake providers with real pgvector, not paid calls. **Local authentication is implemented:** employees see their own requests; managers review other people's requests. Manager/comment audit metadata is not persisted. Hosted CI status requires an actual GitHub run. See [account setup](docs/authentication.md).
+- Purchase requests with validation, exact integer-cent calculations, and duplicate-safe creation.
+- Approval/rejection workflows with idempotent decisions and cross-service status propagation.
+- Responsive Vue dashboard with purchasing forms, filters, refresh, and loading/error states.
+- PostgreSQL user accounts, employee signup, password hashing, and session-based login/logout.
+- Admin user management with employee/manager/admin role assignment, role-change audit records, and last-admin protection.
+- HttpOnly cookies, CSRF checks, ownership enforcement, and signed internal gRPC identities.
+- PostgreSQL persistence, versioned migrations, structured logs, deadlines, health checks, and graceful shutdown.
+- Docker Compose deployment and GitHub Actions configuration for testing and builds.
+- Optional read-only policy RAG with pgvector retrieval, source references, and explicit **Not configured** behavior.
 
-See [the backend run guide](docs/backend.md) for two-terminal startup, configuration, a smoke client, tests, and Protocol Buffer generation.
-
-Start the HTTP gateway with `go run ./cmd/api-gateway` once both gRPC services are running. See [the API guide](docs/api.md) for procurement, signup/login, admin routes and curl/PowerShell examples.
+The core application needs **no AI API key or model**. The optional assistant has tests using fake providers and real pgvector; live OpenAI integration remains unverified.
 
 ## Technology stack
 
-| Area | Planned technology |
-| --- | --- |
-| Backend services and API gateway | Go |
-| Frontend | Vue.js 3, TypeScript, Vite |
-| Internal service communication | gRPC and Protocol Buffers |
-| Browser communication | REST/JSON through the Go API gateway |
-| Database | PostgreSQL |
-| Local infrastructure | Docker and Docker Compose |
-| AI extension | Retrieval-augmented generation (RAG) with pgvector |
-| Verification | Go unit/integration tests and frontend build checks |
+- **Backend:** Go, `net/http`, gRPC, Protocol Buffers.
+- **Frontend:** Vue 3 Composition API, TypeScript, Vite.
+- **Persistence:** PostgreSQL and pgxpool; pgvector in the optional AI database.
+- **Authentication:** Argon2id password hashes, opaque server-side sessions, signed internal JWT claims.
+- **Local deployment:** Docker Compose, multistage Go images, unprivileged Nginx frontend.
+- **Verification:** Go unit/integration tests, Vitest component/API tests, TypeScript checks, production builds, PowerShell smoke scripts.
 
-## Functionality
+## Architecture
 
-- Implemented: create, get, and list purchases over gRPC, with validation and integer-cent calculations.
-- Implemented: create, get, list, approve, or reject approvals; synchronize the purchase through gRPC.
-- Implemented: retry-safe operations, dependency deadlines, structured logs, and health checks.
-- Implemented: REST/JSON gateway for listing, reading, creating, and manually deciding purchases.
-- Implemented: PostgreSQL users, employee signup, admin role assignment, server-side sessions, CSRF and service-enforced permissions.
-- Implemented: responsive Vue dashboard, purchasing forms, manual review, refresh, filtering, and clear loading/error states.
-- Implemented: PostgreSQL persistence through pgxpool, isolated purchase/approval schemas, and versioned migrations.
-- Implemented: multistage container images, private database/gRPC networking, migration-gated startup, and persistent local Docker Compose deployment.
-- Implemented: optional policy-only RAG with bounded retrieval, exact source/quote checks, repeatable imports, and explicit Not configured behavior. Live OpenAI integration remains unverified.
-
-## Repository layout
-
-```text
-frontend/                    Vue 3 + TypeScript application and tests
-  src/lib/                   Typed REST client and exact integer-cents helpers
-  src/components/            Accessible purchase and manager forms
-  src/composables/           Local reactive purchase state (no state library)
-  tests/                     Opt-in live gateway acceptance checks
-api-gateway/                 Reserved Phase 00 directory
-cmd/
-  api-gateway/               Go REST/JSON entry point
-  auth-setup/                One-time ignored random local credentials
-  auth-seed/                 Explicit insert-only SQL account bootstrap
-  purchase-service/          Purchase server entry point
-  approval-service/          Approval server entry point
-  smoke/                     Create -> approve -> read demonstration
-  migrate/                   Apply PostgreSQL migrations
-  healthcheck/               Deadline-bound container HTTP/gRPC health probe
-  assistant-service/         Optional policy-only gRPC service; no purchase actions
-  policy-import/             Explicit optional schema/import command; can incur API cost
-internal/
-  gateway/                   HTTP handlers, sessions, gRPC clients, and gateway tests
-  auth/                      SQL users, role rules/audit, sessions and signed identities
-  purchase/                  Purchase rules and memory/PostgreSQL repositories
-  approval/                  Approval rules and memory/PostgreSQL repositories
-  postgres/                  Connection pool, error mapping, and database tests
-  domain/                    Shared status values, validation, and errors
-  rpc/                       gRPC handlers, client adapters, and integration tests
-  config/                    Environment configuration
-  server/                    Health checks, logging, and graceful shutdown
-  app/                       Server dependency wiring and signal handling
-  assistant/                 Chunking, retrieval, provider adapter, and tests
-proto/procureflow/v1/        Versioned Protocol Buffer contract
-gen/procureflow/v1/          Generated Go messages and gRPC stubs
-services/                    Reserved directories from Phase 00
-migrations/                  Embedded, versioned SQL migrations (active)
-  assistant/                 Separate optional AI migration, not run by the MVP
-policies/                    Three synthetic FICTIONAL Markdown policy documents
-proto/assistant/v1/          Separate policy-only RPC contract
-gen/assistant/v1/            Generated policy messages and gRPC stubs
-database/migrations/         Unused Phase 00 placeholder
-docs/
-  architecture.md           Current system design and service boundaries
-  backend.md                Runnable backend guide
-  api.md                    REST API, authenticated decisions, and HTTP examples
-  docker.md                 Compose startup, logs, networking, and persistence demo
-  policy-assistant.md       Optional RAG setup, privacy, cost, and verification
-Dockerfile                   Go multistage build with service/gateway/migration targets
-docker-compose.yml           Local deployment with a persistent PostgreSQL volume
-scripts/smoke.ps1             Repeatable real HTTP create/read/list/approve/retry check
-.github/workflows/ci.yml      Main push/manual Go, PostgreSQL/pgvector, and frontend checks
+```mermaid
+flowchart LR
+    Browser[Vue frontend] -->|REST / JSON with session cookie| Gateway[Go API gateway]
+    Gateway -->|signed gRPC calls| Purchase[Purchase Service]
+    Gateway -->|signed gRPC calls| Approval[Approval Service]
+    Purchase -->|CreateApproval| Approval
+    Approval -->|GetPurchase / SetApprovalStatus| Purchase
+    Gateway -->|identity module only| Users[(auth.users / auth.role_changes)]
+    Purchase -->|owned schema| Requests[(purchase.requests)]
+    Approval -->|owned schema| Decisions[(approval.decisions)]
+    Gateway -.->|optional AnswerPolicy RPC| Assistant[Policy Assistant]
+    Assistant -->|read-only retrieval| Policies[(separate pgvector database)]
 ```
 
-Empty application directories contain `.gitkeep` placeholders so Git can track them. Remove a placeholder when its directory gains real files.
+Procurement data stays behind its owning gRPC service. The gateway accesses only its own `auth.*` tables for identity operations, using `AUTH_DATABASE_URL`; it never queries purchase or approval tables. The procurement services use `DATABASE_URL`. Compose shares one PostgreSQL instance for these three schemas and keeps optional AI storage separate.
 
-## Development preparation
+Business logic depends on Go interfaces, so tests can use concurrent in-memory repositories. Runtime user accounts always use PostgreSQL. Protocol Buffer definitions and generated Go stubs are versioned in the repository. See [the architecture guide](docs/architecture.md).
 
-The backend requires **Go 1.26 or newer** and PostgreSQL 14+ for persistent mode (verified with PostgreSQL 18.3). The direct gRPC memory demo does not require PostgreSQL; the browser app now requires PostgreSQL for users, signup and roles. Generated Protocol Buffer code is included, so `protoc` is needed only when changing the contract. See [PostgreSQL setup and testing](docs/postgresql.md).
+## Quickstart with Docker Compose
 
-Use `.env.example` as the configuration reference. Native Go servers read environment variables from the shell; they do **not** automatically load `.env`. Docker Compose automatically reads root `.env` and uses the separate `COMPOSE_` settings. Never commit local `.env` files, real credentials, or API keys.
-
-## Accounts
-
-Users now live in PostgreSQL **auth.users**. Choose **Create an account** on the login screen to sign up as an employee. Sign in as **admin.demo** using the password in ignored **secrets/admin-credentials.json**, then open **Manage users** to assign employee, manager or admin. The last admin cannot be demoted. Changing a role invalidates that user's old sessions.
-
-Existing employee.demo, employee.two and manager.demo credentials still work. For an existing installation, generate only the new admin files with `go run ./cmd/auth-setup -admin-only`, then rebuild/start Compose. Fresh installations use `go run ./cmd/auth-setup`. See [the authentication guide](docs/authentication.md) for exact setup and limitations.
-
-## Docker Compose quickstart
-
-With Docker Desktop running Linux containers, from the repository root:
+Run from the repository root in PowerShell with Docker Desktop using **Linux containers** and Docker Compose v2. Host Go 1.26+ is needed for the credential setup commands below; [Docker-only credential setup](docs/authentication.md#fresh-installation) is available if Go is not installed. Host Node and PostgreSQL are not needed for the Compose deployment.
 
 ```powershell
-# Fresh install only. Existing demo: use -admin-only to add missing admin files.
-# Skip setup entirely if the required files already exist.
-go run ./cmd/auth-setup
-docker compose config
-docker compose up -d --build
+# Fresh installation: generate local credentials once.
+# Existing installation: add only the missing initial admin files.
+if (-not (Test-Path secrets/auth-users.json)) {
+    go run ./cmd/auth-setup
+    if ($LASTEXITCODE -ne 0) { throw 'Credential setup failed; inspect existing files' }
+} elseif (-not (Test-Path secrets/admin-account.json)) {
+    go run ./cmd/auth-setup -admin-only
+    if ($LASTEXITCODE -ne 0) { throw 'Admin setup failed; inspect existing files' }
+}
+
+docker compose config --quiet
+if ($LASTEXITCODE -ne 0) { throw 'Invalid Compose configuration' }
+docker compose up -d --build --wait
+if ($LASTEXITCODE -ne 0) { throw 'Compose startup failed' }
 docker compose ps -a
 ```
 
-Open **http://localhost:5173/**; the API is **http://localhost:8080**. Only these loopback ports are published. The public **DEVELOPMENT-ONLY** database defaults require no database setup or AI keys. Generate the ignored account files once before starting; skip setup on later runs. Migrations finish before services accept traffic; `migrate` and `auth-seed` exiting with code 0 is expected. SQL account passwords and admin-assigned roles are preserved on subsequent starts. Stop with `docker compose down`, which preserves the named database volume, and resume with `docker compose up -d --wait`.
+Open **http://localhost:5173/**. The browser API is **http://localhost:8080**. Only these loopback ports are published; PostgreSQL and internal gRPC ports remain private.
 
-See [the Docker guide](docs/docker.md) for exact PowerShell commands, port overrides, logs, host/container addresses, and a create/approve/restart/read persistence check. This deployment uses its own volume and preserves any existing native database under `tmp/`.
+Compose applies migrations, runs the insert-only `auth-seed` bootstrap, and waits for health checks before starting the frontend. **Exited (0)** for `migrate` and `auth-seed` means those one-shot jobs completed successfully. Existing SQL passwords, assigned roles, employee IDs, and purchases are preserved on subsequent starts.
 
-## Optional policy assistant
-
-Default Compose startup runs no AI services and requires no API key or models. The Vue panel is collapsed and makes no automatic requests. POST `/api/assistant/ask` reports **Not configured** while disabled. The assistant has no purchase/approval clients, tools, or live order lookup capability.
-
-Read [the optional RAG guide](docs/policy-assistant.md) before enabling the `assistant` profile or running `policy-import`: real imports/questions incur provider cost and send synthetic text to OpenAI. It documents exact commands, model/dimension consistency, citation checks, separate storage, privacy, and limitations. No paid calls run in CI; live OpenAI RAG remains **unverified** until explicitly configured and exercised.
-
-## Frontend quickstart
-
-Use Node.js 22.13+ on the Node 22 line, or Node 24+. The frontend uses Vue's Composition API, Vite, and TypeScript with no UI or state-management library.
-
-1. Prepare PostgreSQL identity storage and bootstrap accounts using [the authentication guide](docs/authentication.md#native-development), then run the purchase and approval services in separate terminals following [the backend guide](docs/backend.md).
-2. From the repository root, start the HTTP gateway in another terminal:
-
-   ```powershell
-   go run ./cmd/api-gateway
-   ```
-
-3. In a new terminal, start the frontend:
-
-   ```powershell
-   cd frontend
-   npm install
-   if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
-   npm run dev
-   ```
-
-   The command preserves an existing `.env.local`. Its only setting is public `VITE_API_BASE_URL=http://localhost:8080`; never put passwords or API keys in a `VITE_` variable. Vite loads frontend environment files; restart it after changing the URL.
-
-Open **http://localhost:5173/**. Use `localhost`, which matches the gateway's default `VUE_ORIGIN`; `127.0.0.1:5173` is a different origin. Vite uses a strict port so it cannot silently switch to a disallowed origin. To use another local origin, set the gateway's `VUE_ORIGIN` and matching Vite host/port explicitly.
-
-Sign in with a generated local account. Employee ID is bound to the signed-in account. Enter an item, quantity, and EUR unit price. The frontend converts decimal text to integer cents with BigInt, accepts a dot or comma, rejects more than two decimal places, and rejects totals outside JavaScript's exact integer range. It never calculates money with `Math.round(euros * 100)`. Sign in as a manager and select **Review** on another person's pending row to approve/reject. Employee accounts and a manager's own rows have no review action. Final-status rows have no review action. **Refresh** reloads gateway data.
-
-The table abbreviates IDs and exposes full IDs to assistive technology. The current API does not return submitted dates, so that column honestly shows **Not provided**. No client-created timestamp is presented as a server submission date. Manager identity is verified; manager IDs/comments are not retained as an audit record by the backend.
-
-Uncertain create failures preserve the original payload and `client_request_id`; **Retry request** resends them identically. Editing as a new request is an explicit action, with a reminder that the previous request may already exist. Failed decisions remain visible with instructions to retry the same decision or refresh. No API data is seeded into the dashboard.
-
-Frontend checks, from `frontend/`:
+The default database settings in [.env.example](.env.example) are public **DEVELOPMENT-ONLY** values. Compose reads an optional root `.env` automatically and uses the `COMPOSE_` settings for local database/port overrides. Credential generation refuses to overwrite existing files. If a file set is incomplete, inspect it rather than deleting files or regenerating the signing key.
 
 ```powershell
-npm test
-npm run build
+# Inspect logs:
+docker compose logs --tail 100 migrate auth-seed api-gateway purchase-service approval-service
+
+# Stop and remove containers/networks while retaining database storage:
+docker compose down
+
+# Resume with the same named volume and existing credentials:
+docker compose up -d --wait
 ```
 
-`npm test` runs unit and DOM-based Vue component tests without a backend. The build runs `vue-tsc` before producing `frontend/dist/`. For an opt-in test of the real create/list/approve/reject/refresh flow, start the gateway and services, then run:
+Keep the named volumes and ignored `secrets/` directory. Do not use `docker compose down -v` for routine shutdown. See [the Docker guide](docs/docker.md) for port overrides, Docker-only setup references, networking, and persistence checks.
+
+## Accounts and roles
+
+Select **Create an account** on the login screen to register with a fictional display name, username, and password. New accounts always receive the **employee** role. They choose their own passwords; signup accounts are stored in SQL and are not appended to local credential files.
+
+- **Employee:** create requests and view only their own purchases.
+- **Manager:** view all purchases and approve/reject other people's requests.
+- **Admin:** manager permissions plus **Manage users**, where roles can be assigned.
+
+Managers and admins cannot decide their own requests. Admins can assign employee, manager, or admin access, but cannot demote the last admin. Role changes are audited in `auth.role_changes` and invalidate the affected user's old sessions on the next HTTP request.
+
+Initial demo usernames are `employee.demo`, `employee.two`, `manager.demo`, and `admin.demo`. View their generated passwords privately in:
+
+- `secrets/demo-credentials.json` for the employee/manager accounts.
+- `secrets/admin-credentials.json` for the admin account.
+
+There is no shared default password. These files are ignored by Git and excluded from image builds. SQL's `auth.users` table is the account source of truth; editing bootstrap JSON does not change an existing SQL password or role.
+
+Sessions last up to eight hours and remain in gateway memory. Restarting the gateway signs users out; SQL accounts, roles, and orders persist. Full setup, validation rules, bootstrap behavior, and security limits are in [the authentication guide](docs/authentication.md).
+
+## Try the procurement workflow
+
+1. Sign in as an employee and submit an item, quantity, and EUR unit price. Employee ID is bound to the signed-in account.
+2. Sign out, then sign in as a manager or admin. Select **Review** on another user's PENDING request and approve or reject it.
+3. Refresh to read the saved status. Final requests and your own requests have no review action.
+4. As an admin, open **Manage users** to assign roles to newly registered employees.
+
+EUR inputs are parsed as text into integer cents without floating-point rounding. Uncertain create failures retain the same `client_request_id` and payload for retries. An identical decision retry can repair a failed cross-service status handoff; conflicting final decisions return an error.
+
+The API does not expose submission timestamps, so the dashboard displays **Not provided**. Manager IDs/comments are validated but are not persisted as procurement decision audit metadata. This differs from the implemented role-change audit.
+
+## Native development
+
+Use Go 1.26+ and Node **22.13+ on the Node 22 line, or Node 24+**, matching `frontend/package.json`. The browser application requires a migrated/seeded PostgreSQL identity database, even if the procurement services use in-memory repositories.
+
+First follow [native account setup](docs/authentication.md#native-development) to provision local credentials, export `AUTH_DATABASE_URL`, apply migrations, and run `go run ./cmd/auth-seed`. Set `DATABASE_URL` in each procurement service terminal for persistent purchase/approval data. Native Go commands do **not** automatically load `.env`.
+
+Then start these in separate terminals from the repository root:
 
 ```powershell
-$env:RUN_LIVE_API_TESTS = '1'
-npm run test:live
+go run ./cmd/purchase-service
 ```
 
-The live tests mount the actual Vue application in a test DOM, call the real gateway with the allowed local origin, and create **two real fictional requests**, one approved and one rejected. A third test exercises signup and admin role assignment, leaving its synthetic user as an employee. It retains those records and does not reset the database. Without the explicit opt-in variable, the live checks are reported as skipped. These checks do not replace a visual browser review. Stop the dev server before using `npm run preview` to serve a production build on the same localhost origin.
+```powershell
+go run ./cmd/approval-service
+```
 
-Read [docs/architecture.md](docs/architecture.md) for the design. Local AI assistant guidance belongs in the ignored `AGENTS.md` file; keep additional agent and AI assistance documentation in the ignored `docs/agents/` and `docs/ai/` directories.
+```powershell
+go run ./cmd/api-gateway
+```
 
-## Repeatable validation and CI
+In another terminal:
 
-From the repository root in PowerShell, verify formatting without changing files,
-then run Go checks. PowerShell does not automatically fail on a native command's
-nonzero exit code, so check `$LASTEXITCODE` before continuing:
+```powershell
+Set-Location frontend
+npm ci
+if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
+npm run dev
+```
+
+Use `http://localhost:5173` and `VITE_API_BASE_URL=http://localhost:8080`. The gateway's default `VUE_ORIGIN` permits that exact frontend origin. Keep the browser/API hostname consistent: mixing `localhost` and `127.0.0.1` breaks the SameSite cookie flow. Restart Vite after changing its environment settings. Never put passwords, signing keys, or provider keys in `VITE_` variables.
+
+See [backend commands and protobuf generation](docs/backend.md) and [PostgreSQL setup](docs/postgresql.md) for detailed configuration. `cmd/smoke` is a privileged internal gRPC developer tool; the HTTP scripts below exercise actual password/session authentication.
+
+## Validation
+
+From the repository root in PowerShell:
 
 ```powershell
 $unformatted = @(gofmt -l cmd internal gen migrations)
@@ -203,86 +177,72 @@ try {
 } finally { Pop-Location }
 ```
 
-Without `TEST_DATABASE_URL`, the six procurement/identity PostgreSQL integration tests explicitly
-**SKIP**. The optional pgvector test also skips without `AI_TEST_DATABASE_URL`;
-the unit and loopback gRPC tests still run. For full local database
-coverage, set a URL for a separate test server whose role has CREATEDB before
-running the Go checks. Each integration test creates, migrates, and drops only
-its own generated database. See [the test database guide](docs/postgresql.md#database-integration-tests).
-Never point test setup at a production server.
+Without `TEST_DATABASE_URL`, six procurement/identity PostgreSQL integration tests explicitly **skip**. The pgvector integration test skips without `AI_TEST_DATABASE_URL`. Set these URLs to separate test infrastructure with CREATEDB permission to run the checks. Each integration test creates and removes only its own isolated database; tests never fall back to application `DATABASE_URL`. A package-level PASS can include skipped integration tests. See [database test setup](docs/postgresql.md#database-integration-tests) and [assistant verification](docs/policy-assistant.md).
 
-For the real HTTP flow, start the stack and run:
+With the real stack running, exercise procurement and admin workflows:
 
 ```powershell
-docker compose config --quiet
-if ($LASTEXITCODE -ne 0) { throw 'Invalid Compose configuration' }
-docker compose up -d --build --wait
-if ($LASTEXITCODE -ne 0) { throw 'Compose startup failed' }
-powershell.exe -NoProfile -File ./scripts/smoke.ps1
+powershell.exe -NoProfile -File scripts/smoke.ps1
 if ($LASTEXITCODE -ne 0) { throw 'Procurement smoke check failed' }
-powershell.exe -NoProfile -File ./scripts/auth-smoke.ps1
-if ($LASTEXITCODE -ne 0) { throw 'Smoke check failed' }
-# If the gateway uses a different host port:
-# powershell.exe -NoProfile -File ./scripts/smoke.ps1 -BaseUrl http://localhost:8082 -TimeoutSeconds 10
+powershell.exe -NoProfile -File scripts/auth-smoke.ps1
+if ($LASTEXITCODE -ne 0) { throw 'Authentication smoke check failed' }
 ```
 
-On PowerShell 7 or another OS, use `pwsh -NoProfile -File ./scripts/smoke.ps1`
-instead. The script uses `Invoke-RestMethod`, a fresh client UUID each run, and
-bounded requests. It creates a real fictional 5000-cent purchase, checks GET
-and list, approves it, reads APPROVED, repeats the identical decision, and reads
-again. Any HTTP error or assertion failure exits nonzero. It leaves the record
-for inspection and never resets data or removes volumes. It signs in with generated employee/manager accounts, also leaves a manager-owned PENDING security-check record, and verifies isolation, CSRF and self-review restrictions. The additional auth-smoke.ps1 checks public signup, admin role grants, session revocation and delegated approval, leaving its synthetic account as an employee. Add -RestartGateway to that script to check persistence across a gateway restart. The scripts target either Compose or already-running
-native services through their gateway; it does not manage their lifecycle.
+Use `pwsh` instead of `powershell.exe` on PowerShell 7/other operating systems. The scripts create fictional records and retain them. The procurement script checks create/get/list/approve/retry, employee isolation, CSRF, forged IDs, and self-review restrictions. The auth script checks signup, admin role assignment, stale-session rejection, and delegated approval; its synthetic user is left as an employee. `-RestartGateway` on the auth script also checks account/role persistence and briefly restarts the gateway. Both scripts accept `-BaseUrl` for custom gateway ports; credential-file overrides are documented in [authentication.md](docs/authentication.md).
 
-`.github/workflows/ci.yml` runs on **pushes to `main` and manual dispatch** only;
-both jobs also require the `main` ref. It has read-only repository permissions
-and does not publish, deploy, commit, or push. The backend job uses the Go
-version in `go.mod`, verifies `gofmt`, runs vet/tests/build, and provisions an
-PostgreSQL 18 service plus a separate pgvector service for the assistant, with
-explicit test URLs. Their public CI-only password is a fixture, not a
-repository secret or development database credential. The role can create the
-isolated test databases. Verbose test output is checked for unexpected database
-skips, which fail the job. The frontend job uses Node 24, installs from the lock
-file with `npm ci`, runs the frontend unit/component tests, and runs the TypeScript
-check plus Vite build. Actions configuration follows the official
-[Go setup](https://github.com/actions/setup-go/tree/v6),
-[Node setup](https://github.com/actions/setup-node/tree/v6), and
-[PostgreSQL service](https://docs.github.com/en/actions/tutorials/use-containerized-services/create-postgresql-service-containers)
-guides.
+Opt-in live Vue checks, from `frontend/`:
 
-After manually committing and pushing, inspect the **CI** workflow in GitHub's
-Actions tab, including both jobs and database test output. Manual **Run
-workflow** requires this workflow to exist on the default branch. Until a real
-run finishes successfully, GitHub CI status is **unverified**.
+```powershell
+$env:RUN_LIVE_API_TESTS = '1'
+$env:VITE_API_BASE_URL = 'http://localhost:8080'
+try {
+    npm run test:live
+    if ($LASTEXITCODE -ne 0) { throw 'Live Vue checks failed' }
+} finally {
+    Remove-Item Env:RUN_LIVE_API_TESTS
+    Remove-Item Env:VITE_API_BASE_URL
+}
+```
 
-Known coverage gaps: CI does not build Compose images, run the HTTP smoke script
-against a deployed stack, check persistence across container recreation, or run
-the opt-in live Vue tests. Run those locally using this section and
-[the Docker persistence walkthrough](docs/docker.md#live-flow-and-persistence-check).
-Unit/component tests use a DOM simulator rather than a full browser; visual
-accessibility review, browser automation, load testing, and race-detector checks
-are not configured in CI. Fake-provider tests include real pgvector retrieval;
-paid OpenAI calls and live model-quality evaluation are excluded. Tests cover deterministic deadlines and partial-failure
-retries, but there is still no background repair worker. Signup, admin role grants, role-change session invalidation and concurrent last-admin protection are covered; production identity federation, MFA, password reset and durable shared sessions are not implemented.
+These three checks exercise the actual Vue components and real gateway: purchase approval, purchase rejection, and signup/admin role assignment. They retain synthetic records and restore the synthetic signup user to employee. Their test DOM emulates browser cookie transport; they do not replace full-browser or visual accessibility testing. Without the opt-in flag, these checks are reported as skipped.
 
-PostgreSQL accounts, employee signup and admin role assignment were added after Phase 08; setup and limitations are in [authentication.md](docs/authentication.md).
+## GitHub Actions
 
-## Development roadmap
+[The CI workflow](.github/workflows/ci.yml) runs on pushes to `main` and manual dispatch; both jobs require the `main` ref. It verifies Go formatting, runs `go vet`, Go tests/build, and frontend `npm ci`, unit/component tests, TypeScript checks and Vite build. Explicit PostgreSQL and pgvector service containers enable database integration tests; unexpected database skips fail the job. Provider tests make no paid API calls.
 
-| Phase | Milestone | Expected verification |
-| --- | --- | --- |
-| 00 | Repository foundation and architecture documentation | Check directories, documentation, ignore rules, and Git diff |
-| 01 | Original persistence-first plan superseded by the requested milestones | Persistence delivered in Phase 03 |
-| 02 | Completed: runnable purchase and approval gRPC services with in-memory storage | Go unit tests, loopback gRPC integration tests, and executable smoke client |
-| 03 | Completed: PostgreSQL persistence and service-owned schemas | Database constraint, migration, concurrency, and restart checks |
-| 04 | Completed: Go REST/JSON gateway backed by gRPC | HTTP handler tests, live route checks, and Go build |
-| 05 | Completed: accessible Vue procurement dashboard | Frontend unit/component tests, live API flows, TypeScript check, and production build |
-| 06 | Completed: local Docker Compose deployment | Health checks, automatic migrations, live UI/API flows, and persistence across container recreation |
-| 07 | Repeatable validation and main-only GitHub Actions configuration | Real HTTP smoke script, focused failure tests, Go/PostgreSQL checks, and frontend checks; hosted CI result awaits a run |
-| 08 | Optional read-only policy RAG | MVP baseline checks, real pgvector/source matching with fake providers, and disabled/unavailable assistant checks; live integration unverified |
+CI does not deploy the app, build Compose images, run the deployed HTTP smoke scripts, verify persistence across container recreation, or execute the opt-in live Vue checks. Load tests, race-detector checks, and full-browser accessibility checks are not configured. Check the actual GitHub Actions results before describing hosted CI as passing; local validation alone does not establish hosted status.
 
-The requested milestones supersede the original roadmap. Live provider evaluation, production hardening, and interview preparation remain future work. Each milestone should remain small enough to review and verify independently.
+## Optional policy assistant
 
-## Data and Git workflow
+The assistant is disabled by default through an optional Compose profile. After signing in, the collapsed policy panel can report **Not configured** without an API key. The assistant has no purchase actions or live order lookup capability.
 
-Use fictional purchase records, suppliers, users, and policies. Work only on the existing `main` branch. Do not initialize Git again or automatically create branches, pull requests, commits, pushes, resets, or merges. Propose Conventional Commit messages for the user to apply manually.
+When explicitly configured, policy Markdown files are chunked, embedded, and imported into a separate pgvector database. Questions retrieve matching snippets and send only that evidence to the configured LLM, returning checked document/section references. Real imports/questions incur provider cost and send the question and fictional evidence to the provider. Fake-provider tests do not establish live model quality or production readiness.
+
+Follow [policy assistant setup](docs/policy-assistant.md) before enabling the profile or running `policy-import`. Live OpenAI integration is **unverified**; it is not required for the procurement MVP.
+
+## Repository guide
+
+- `frontend/`: Vue app, typed REST client, accessible forms, admin UI, and tests.
+- `cmd/`: executable entry points for services, gateway, migrations, account setup/seeding, health checks, smoke client, and optional assistant/import tools.
+- `internal/purchase/` and `internal/approval/`: business rules and memory/PostgreSQL repositories.
+- `internal/auth/`: SQL users, password/session handling, role rules/audit, and signed internal identities.
+- `internal/gateway/` and `internal/rpc/`: HTTP/gRPC boundaries, client adapters, and transport tests.
+- `proto/` and `gen/`: versioned Protocol Buffers and generated Go code.
+- `migrations/`: active embedded SQL migrations; `migrations/assistant/` is separate and optional.
+- `policies/`: synthetic FICTIONAL Markdown policies.
+- `scripts/`: repeatable HTTP workflow and authentication smoke checks.
+- `docs/`: [architecture](docs/architecture.md), [API reference](docs/api.md), [authentication](docs/authentication.md), [backend](docs/backend.md), [PostgreSQL](docs/postgresql.md), [Docker](docs/docker.md), and [optional RAG](docs/policy-assistant.md) guides.
+
+The original `api-gateway/`, `services/`, and `database/migrations/` directories are reserved Phase 00 placeholders. Active Go code is under `cmd/` and `internal/`; active migrations are under `migrations/`.
+
+## Milestones and remaining work
+
+Completed milestones cover the repository foundation, Go gRPC services, PostgreSQL persistence, REST gateway, Vue dashboard, local Compose deployment, and repeatable checks/CI configuration. PostgreSQL users, signup, and admin role management extend the procurement MVP. Optional Phase 08 RAG has fake-provider/real-retrieval checks; live provider verification remains outstanding.
+
+Remaining work includes durable cross-service repair (outbox/background worker), persisted procurement decision audit metadata, pagination, submission dates in the API, and live provider evaluation. Production hardening would require HTTPS/gRPC TLS, managed secrets, least-privilege SQL roles, shared session/rate-limit storage, and account lifecycle features such as password reset, verification and MFA. The current deployment is a loopback-only portfolio demo.
+
+## Contribution and data rules
+
+Use fictional records and policies. Keep credentials, local `.env` files, and `secrets/` out of Git and image builds. Local agent guidance belongs in ignored `AGENTS.md`, `docs/agents/`, and `docs/ai/` paths.
+
+Work only on the existing `main` branch. Do not automatically create branches/PRs or commit, push, reset, or merge. Use Conventional Commit messages for changes you choose to commit manually.
