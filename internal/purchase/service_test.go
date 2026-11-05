@@ -165,3 +165,81 @@ func TestPurchaseTransitions(t *testing.T) {
 		})
 	}
 }
+
+func TestInvalidCreateLeavesNoPurchaseOrApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		quantity int64
+		price    int64
+	}{
+		{"zero quantity", 0, 2500},
+		{"negative quantity", -1, 2500},
+		{"negative price", 2, -1},
+		{"amount overflow", 2, math.MaxInt64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := NewRepository()
+			svc := NewService(repo, creatorFunc(func(context.Context, string) error {
+				t.Fatal("invalid purchase reached approval service")
+				return nil
+			}), time.Second)
+			in := validInput()
+			in.Quantity, in.UnitPriceCents = tc.quantity, tc.price
+			if _, err := svc.Create(context.Background(), in); !errors.Is(err, domain.ErrInvalid) {
+				t.Fatalf("Create error=%v; want ErrInvalid", err)
+			}
+			items, err := repo.List(context.Background())
+			if err != nil || len(items) != 0 {
+				t.Fatalf("invalid create stored purchases=%v error=%v", items, err)
+			}
+		})
+	}
+}
+
+func TestDuplicateCreatePreservesOriginalDetails(t *testing.T) {
+	ctx := context.Background()
+	approvalCalls := 0
+	svc := NewService(NewRepository(), creatorFunc(func(context.Context, string) error {
+		approvalCalls++
+		return nil
+	}), time.Second)
+	original, err := svc.Create(ctx, validInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := svc.Create(ctx, validInput())
+	if err != nil || repeated != original {
+		t.Fatalf("duplicate=%+v original=%+v error=%v", repeated, original, err)
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*Input)
+	}{
+		{"employee", func(in *Input) { in.EmployeeID = "another-employee" }},
+		{"item", func(in *Input) { in.ItemName = "Another fictional item" }},
+		{"quantity", func(in *Input) { in.Quantity++ }},
+		{"price", func(in *Input) { in.UnitPriceCents++ }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := validInput()
+			tc.change(&changed)
+			if _, err := svc.Create(ctx, changed); !errors.Is(err, domain.ErrExists) {
+				t.Fatalf("changed duplicate error=%v; want ErrExists", err)
+			}
+			stored, err := svc.Get(ctx, original.ID)
+			if err != nil || stored != original {
+				t.Fatalf("original changed: %+v error=%v", stored, err)
+			}
+		})
+	}
+	if approvalCalls != 2 {
+		t.Fatalf("approval calls=%d; conflicting creates must not propagate", approvalCalls)
+	}
+}
+
+func TestGetMissingPurchase(t *testing.T) {
+	svc := NewService(NewRepository(), creatorFunc(func(context.Context, string) error { return nil }), time.Second)
+	if _, err := svc.Get(context.Background(), domain.NewUUID()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Get error=%v; want ErrNotFound", err)
+	}
+}

@@ -182,6 +182,7 @@ func TestInvalidCreateNeverCallsGRPC(t *testing.T) {
 		{"missing price", strings.Replace(createBody, `,"unit_price_cents":80000`, "", 1), "INVALID_ARGUMENT"},
 		{"null price", strings.Replace(createBody, `"unit_price_cents":80000`, `"unit_price_cents":null`, 1), "INVALID_ARGUMENT"},
 		{"zero quantity", strings.Replace(createBody, `"quantity":2`, `"quantity":0`, 1), "INVALID_ARGUMENT"},
+		{"negative quantity", strings.Replace(createBody, `"quantity":2`, `"quantity":-1`, 1), "INVALID_ARGUMENT"},
 		{"negative price", strings.Replace(createBody, `"unit_price_cents":80000`, `"unit_price_cents":-1`, 1), "INVALID_ARGUMENT"},
 		{"overflow", strings.Replace(createBody, `"unit_price_cents":80000`, `"unit_price_cents":9223372036854775807`, 1), "INVALID_ARGUMENT"},
 		{"blank employee", strings.Replace(createBody, `"emp-101"`, `" "`, 1), "INVALID_ARGUMENT"},
@@ -366,4 +367,61 @@ func TestDeadlineCancellationAndMalformedPeer(t *testing.T) {
 		return nil, errors.New("arbitrary internal failure")
 	}}, nil)
 	wantError(t, request(h, "GET", "/api/purchases/purchase-demo", ""), 502, "BAD_GATEWAY")
+}
+
+func TestDecisionMissingOrConflictingApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		code      codes.Code
+		http      int
+		errorName string
+	}{
+		{"missing approval", codes.NotFound, http.StatusNotFound, "NOT_FOUND"},
+		{"conflicting decision", codes.FailedPrecondition, http.StatusConflict, "FAILED_PRECONDITION"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			h := testHandler(fakePurchases{}, fakeApprovals(func(_ context.Context, req *pb.DecideApprovalRequest) (*pb.Approval, error) {
+				calls++
+				if req.PurchaseId != "purchase-demo" || req.Status != pb.Status_STATUS_APPROVED {
+					t.Fatalf("unexpected decision input=%v", req)
+				}
+				return nil, status.Error(tc.code, "private approval detail")
+			}))
+			w := request(h, "POST", "/api/purchases/purchase-demo/decision", decisionBody)
+			e := wantError(t, w, tc.http, tc.errorName)
+			if calls != 1 || e.Retryable || strings.Contains(w.Body.String(), "private approval detail") {
+				t.Fatalf("unexpected calls=%d or unsafe error=%s", calls, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestMutationTimeoutsAreRetryable(t *testing.T) {
+	for _, route := range []string{"/api/purchases", "/api/purchases/purchase-demo/decision"} {
+		t.Run(route, func(t *testing.T) {
+			calls := 0
+			waitForDeadline := func(ctx context.Context) error {
+				calls++
+				checkDeadline(t, ctx)
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			h := testHandler(fakePurchases{create: func(ctx context.Context, _ *pb.CreatePurchaseRequest) (*pb.Purchase, error) {
+				return nil, waitForDeadline(ctx)
+			}}, fakeApprovals(func(ctx context.Context, _ *pb.DecideApprovalRequest) (*pb.Approval, error) {
+				return nil, waitForDeadline(ctx)
+			}))
+			h.timeout = 20 * time.Millisecond
+			body := createBody
+			if strings.HasSuffix(route, "/decision") {
+				body = decisionBody
+			}
+			w := request(h, "POST", route, body)
+			e := wantError(t, w, http.StatusGatewayTimeout, "DEADLINE_EXCEEDED")
+			if calls != 1 || !e.Retryable || w.Header().Get("Retry-After") != "1" {
+				t.Fatalf("timeout lost retry guidance: calls=%d error=%+v", calls, e)
+			}
+		})
+	}
 }

@@ -6,7 +6,7 @@ The project is built in small, independently testable milestones, with maintaina
 
 ## Current status
 
-**Phase 06: local Docker Compose deployment.** The Vue 3 + TypeScript dashboard, REST gateway, two Go gRPC services, and PostgreSQL run together with health checks and automatic migrations. Purchase/approval state lives in a named volume. Native development still supports PostgreSQL or in-memory repositories. **Demo identity only: `manager_id` is not authenticated, and manager/comment metadata is not persisted.** Authentication and AI remain future work.
+**Phase 07: repeatable checks and GitHub Actions configuration.** The existing Vue/Go/PostgreSQL MVP now has a PowerShell HTTP smoke check and a main-only CI workflow. Local Docker deployment retains health checks, automatic migrations, and durable purchase/approval state. The workflow's actual GitHub result must be inspected after it is committed and pushed manually; local checks do not establish that CI is green. **Demo identity only: `manager_id` is not authenticated, and manager/comment metadata is not persisted.** Authentication and AI remain future work.
 
 See [the backend run guide](docs/backend.md) for two-terminal startup, configuration, a smoke client, tests, and Protocol Buffer generation.
 
@@ -74,6 +74,8 @@ docs/
   docker.md                 Compose startup, logs, networking, and persistence demo
 Dockerfile                   Go multistage build with service/gateway/migration targets
 docker-compose.yml           Local deployment with a persistent PostgreSQL volume
+scripts/smoke.ps1             Repeatable real HTTP create/read/list/approve/retry check
+.github/workflows/ci.yml      Main push/manual Go, PostgreSQL, and frontend checks
 ```
 
 Empty application directories contain `.gitkeep` placeholders so Git can track them. Remove a placeholder when its directory gains real files.
@@ -146,6 +148,92 @@ The live test mounts the actual Vue application in a test DOM, calls the real ga
 
 Read [docs/architecture.md](docs/architecture.md) for the design. Local AI assistant guidance belongs in the ignored `AGENTS.md` file; keep additional agent and AI assistance documentation in the ignored `docs/agents/` and `docs/ai/` directories.
 
+## Repeatable validation and CI
+
+From the repository root in PowerShell, verify formatting without changing files,
+then run Go checks. PowerShell does not automatically fail on a native command's
+nonzero exit code, so check `$LASTEXITCODE` before continuing:
+
+```powershell
+$unformatted = @(gofmt -l cmd internal gen migrations)
+if ($LASTEXITCODE -ne 0) { throw 'gofmt failed' }
+if ($unformatted.Count -gt 0) { throw "Run gofmt on: $($unformatted -join ', ')" }
+go vet ./...
+if ($LASTEXITCODE -ne 0) { throw 'go vet failed' }
+go test -v -count=1 ./...
+if ($LASTEXITCODE -ne 0) { throw 'Go tests failed' }
+go build ./...
+if ($LASTEXITCODE -ne 0) { throw 'Go build failed' }
+
+Push-Location frontend
+try {
+    npm ci
+    if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+    npm test
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend tests failed' }
+    npm run build
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend typecheck/build failed' }
+} finally { Pop-Location }
+```
+
+Without `TEST_DATABASE_URL`, the four PostgreSQL integration tests explicitly
+**SKIP**; the unit and loopback gRPC tests still run. For full local database
+coverage, set a URL for a separate test server whose role has CREATEDB before
+running the Go checks. Each integration test creates, migrates, and drops only
+its own generated database. See [the test database guide](docs/postgresql.md#database-integration-tests).
+Never point test setup at a production server.
+
+For the real HTTP flow, start the stack and run:
+
+```powershell
+docker compose config --quiet
+if ($LASTEXITCODE -ne 0) { throw 'Invalid Compose configuration' }
+docker compose up -d --build --wait
+if ($LASTEXITCODE -ne 0) { throw 'Compose startup failed' }
+powershell.exe -NoProfile -File ./scripts/smoke.ps1
+if ($LASTEXITCODE -ne 0) { throw 'Smoke check failed' }
+# If the gateway uses a different host port:
+# powershell.exe -NoProfile -File ./scripts/smoke.ps1 -BaseUrl http://localhost:8082 -TimeoutSeconds 10
+```
+
+On PowerShell 7 or another OS, use `pwsh -NoProfile -File ./scripts/smoke.ps1`
+instead. The script uses `Invoke-RestMethod`, a fresh client UUID each run, and
+bounded requests. It creates one real fictional 5000-cent purchase, checks GET
+and list, approves it, reads APPROVED, repeats the identical decision, and reads
+again. Any HTTP error or assertion failure exits nonzero. It leaves the record
+for inspection and never resets data or removes volumes. Its manager identity
+is explicitly DEMO-ONLY. The script targets either Compose or already-running
+native services through their gateway; it does not manage their lifecycle.
+
+`.github/workflows/ci.yml` runs on **pushes to `main` and manual dispatch** only;
+both jobs also require the `main` ref. It has read-only repository permissions
+and does not publish, deploy, commit, or push. The backend job uses the Go
+version in `go.mod`, verifies `gofmt`, runs vet/tests/build, and provisions an
+ephemeral PostgreSQL 18 service. Its public CI-only password is a fixture, not a
+repository secret or development database credential. The role can create the
+isolated test databases. Verbose test output is checked for unexpected database
+skips, which fail the job. The frontend job uses Node 24, installs from the lock
+file with `npm ci`, runs the 33 unit/component tests, and runs the TypeScript
+check plus Vite build. Actions configuration follows the official
+[Go setup](https://github.com/actions/setup-go/tree/v6),
+[Node setup](https://github.com/actions/setup-node/tree/v6), and
+[PostgreSQL service](https://docs.github.com/en/actions/tutorials/use-containerized-services/create-postgresql-service-containers)
+guides.
+
+After manually committing and pushing, inspect the **CI** workflow in GitHub's
+Actions tab, including both jobs and database test output. Manual **Run
+workflow** requires this workflow to exist on the default branch. Until a real
+run finishes successfully, GitHub CI status is **unverified**.
+
+Known coverage gaps: CI does not build Compose images, run the HTTP smoke script
+against a deployed stack, check persistence across container recreation, or run
+the opt-in live Vue tests. Run those locally using this section and
+[the Docker persistence walkthrough](docs/docker.md#live-flow-and-persistence-check).
+Unit/component tests use a DOM simulator rather than a full browser; visual
+accessibility review, browser automation, load testing, and race-detector checks
+are not configured in CI. Tests cover deterministic deadlines and partial-failure
+retries, but there is still no background repair worker or real authentication.
+
 ## Development roadmap
 
 | Phase | Milestone | Expected verification |
@@ -157,6 +245,7 @@ Read [docs/architecture.md](docs/architecture.md) for the design. Local AI assis
 | 04 | Completed: Go REST/JSON gateway backed by gRPC | HTTP handler tests, live route checks, and Go build |
 | 05 | Completed: accessible Vue procurement dashboard | Frontend unit/component tests, live API flows, TypeScript check, and production build |
 | 06 | Completed: local Docker Compose deployment | Health checks, automatic migrations, live UI/API flows, and persistence across container recreation |
+| 07 | Repeatable validation and main-only GitHub Actions configuration | Real HTTP smoke script, focused failure tests, Go/PostgreSQL checks, and frontend checks; hosted CI result awaits a run |
 
 The requested Phase 05 frontend and Phase 06 infrastructure scopes supersede the original roadmap. Policy RAG and interview preparation remain future work. Each milestone should remain small enough to review and verify independently.
 

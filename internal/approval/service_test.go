@@ -65,6 +65,10 @@ func TestDecisionsAndRetry(t *testing.T) {
 			if _, err := svc.Decide(ctx, a.PurchaseID, other); !errors.Is(err, domain.ErrConflict) {
 				t.Fatalf("conflict=%v", err)
 			}
+			afterConflict, err := svc.Get(ctx, a.PurchaseID)
+			if err != nil || afterConflict.Status != decision {
+				t.Fatalf("conflicting decision changed saved approval=%+v error=%v", afterConflict, err)
+			}
 			for _, invalid := range []domain.Status{domain.Pending, "", "UNKNOWN"} {
 				if _, err := svc.Decide(ctx, a.PurchaseID, invalid); !errors.Is(err, domain.ErrInvalid) {
 					t.Fatalf("invalid=%v", err)
