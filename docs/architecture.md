@@ -1,13 +1,13 @@
 # ProcureFlow AI architecture
 
-## Current implementation: Phase 04
+## Current implementation: Phase 05
 
-The backend has a browser-facing Go REST/JSON gateway and two Go services communicating over gRPC. Each service depends on a context-aware repository interface. Without `DATABASE_URL`, it uses memory; with that variable set, it uses pgxpool and its own PostgreSQL schema. All three executables belong to one root Go module. The gateway has no database dependency. Domain logic lives in `internal/purchase` and `internal/approval`; `cmd/` contains small entry points. The Protocol Buffer contracts are unchanged.
+The Vue 3 frontend calls a browser-facing Go REST/JSON gateway, which calls two Go services over gRPC. Each service depends on a context-aware repository interface. Without `DATABASE_URL`, it uses memory; with that variable set, it uses pgxpool and its own PostgreSQL schema. All three backend executables belong to one root Go module. The gateway and browser have no database dependency. Domain logic lives in `internal/purchase` and `internal/approval`; `cmd/` contains small entry points. The REST and Protocol Buffer contracts are unchanged in Phase 05.
 
 ```mermaid
 flowchart LR
     Client[Go smoke client] -->|Create / Get / List| Purchase[Purchase gRPC service :50051]
-    Browser[Future Vue frontend / HTTP client] -->|REST / JSON| Gateway[Go API gateway :8080]
+    Browser[Vue 3 + TypeScript frontend :5173] -->|REST / JSON| Gateway[Go API gateway :8080]
     Gateway -->|Create / Get / List over gRPC| Purchase
     Gateway -->|DecideApproval over gRPC| Approval
     Client -->|Decide / Get / List| Approval[Approval gRPC service :50052]
@@ -17,7 +17,17 @@ flowchart LR
     Approval -->|owned schema only| ApprovalStore[(approval.decisions)]
 ```
 
-The two schemas may share one PostgreSQL instance for the local demo. There are no cross-schema queries or foreign keys between service data. Docker, frontend, authentication, and policy RAG remain future work. The original `services/` and `api-gateway/` directories remain reserved; current backend code is under `cmd/` and `internal/`.
+The two schemas may share one PostgreSQL instance for the local demo. There are no cross-schema queries or foreign keys between service data. Docker, authentication, and policy RAG remain future work. The original `services/` and `api-gateway/` directories remain reserved; current backend code is under `cmd/` and `internal/`.
+
+## Frontend boundary
+
+`frontend/` is a Vite application using Vue's Composition API and TypeScript. `src/lib/api.ts` is the small typed REST client, `src/composables/usePurchases.ts` owns reactive page state, and components provide the request form, status badges, and manual manager review. There is no third-party state-management or UI library. API responses, not sample records, supply all table rows and summary totals.
+
+Decimal EUR input is parsed as text into BigInt cents before being checked against JavaScript's safe-integer range and converted to JSON integer numbers. Multiplication and aggregate formatting avoid floating-point rounding. Unsafe API numbers are rejected visibly rather than silently displayed. The frontend stores no credentials and omits browser credentials on fetch requests. `VITE_API_BASE_URL` is public build configuration.
+
+An uncertain create keeps its original idempotency key and payload for identical retries. Decision status changes are applied only after the real gateway confirms success. Refresh replaces the list with fresh API data, and failed refreshes preserve prior rows with a visible stale-data message. Native labels, keyboard focus handling, live notices, text status badges, reduced-motion styles, and a horizontally scrollable semantic table support accessibility.
+
+The current REST purchase response has no creation timestamp, even though PostgreSQL stores one internally. The submitted-date column therefore shows `Not provided`. This phase does not invent dates or change contracts to expose them. Manager IDs/comments are clearly marked as demo-only, are not authenticated, and are not persisted. Frontend tests cover exact cents, API errors, retry identity, form behavior, and dashboard states; opt-in live tests exercise the actual Vue forms against the gateway.
 
 ## Boundaries and Go packages
 

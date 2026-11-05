@@ -1,0 +1,29 @@
+{
+  "name": "procureflow-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0 <23 || >=24.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "test": "vitest run src",
+    "test:live": "vitest run tests/live-flow.test.ts"
+  },
+  "dependencies": {
+    "vue": "3.5.44"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.0",
+    "@vitejs/plugin-vue": "6.0.10",
+    "jsdom": "29.1.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.5",
+    "vitest": "5.1.0",
+    "vue-tsc": "3.3.14"
+  }
+}
